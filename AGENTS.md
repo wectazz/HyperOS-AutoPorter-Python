@@ -11,7 +11,7 @@ Single-file Python tool: `autoporter.py` builds `super.img` from 2 Xiaomi OTAs +
 1. `setup_tools()`: mkdirs `tools/ moddedapps_hos3/ moddedapps_hos4/ extracted_partitions/`, `chmod +x` on `tools/*`, prepends `tools/` to `PATH`.
 2. Downloads GDrive zips via `gdown.download()`, unpacks with `shutil.unpack_archive` falling back to `7z x` (requires `p7zip-full`), flattens single top-level dir, deletes zip.
 3. `process_firmware()`: downloads OTA zip → extracts only `payload.bin` → **deletes zip immediately** → dumps partitions via `payload-dumper-go` → **deletes payload.bin immediately**. Disk-saving deletions are load-bearing; keep them.
-4. `repack_super_image()`: `lpmake --metadata-slots 3 --virtual-ab`, group `qti_dynamic_partitions_a`, 4096-byte alignment, +64MB group padding, +4MB super padding. All partitions get `_a` suffix.
+4. `repack_super_image()`: `lpmake --metadata-slots 3 --virtual-ab`, groups `qti_dynamic_partitions_a` (same size for `_b`), 4096-byte alignment, +64MB group padding, +4MB super padding. Every partition is added twice: `<name>_a` with the real image, `<name>_b` as empty size-0 placeholder (no `--image` — unpacks as 0-byte file). Group sum may exceed super size; allowed under `--virtual-ab` (COW).
 
 ## Hardcoded inputs
 - Stock (duchamp, HyperOS 3): `odm vendor odm_dlkm system_dlkm vendor_dlkm`
