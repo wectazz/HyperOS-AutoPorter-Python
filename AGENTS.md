@@ -9,7 +9,7 @@ Single-file Python tool: `autoporter.py` builds `super.img` from 2 Xiaomi OTAs +
 
 ## What the script does (order matters)
 1. `setup_tools()`: mkdirs `tools/ moddedapps_hos3/ moddedapps_hos4/ extracted_stock/ extracted_port/ unpacked_stock/ unpacked_port/`, `chmod +x` on `tools/*`, prepends `tools/` to `PATH`.
-2. Downloads GDrive zips via `gdown.download()`, unpacks with `shutil.unpack_archive` falling back to `7z x` (requires `p7zip-full`), flattens single top-level dir, wipes stale dest names before move (re-runs safe), prints top-level layout, deletes zip.
+2. Downloads the selected GDrive mod set via `gdown.download()` (`--hyper-version hos3|hos4`, default `hos4`; workflow `choice` input), unpacks with `shutil.unpack_archive` falling back to `7z x` (requires `p7zip-full`), flattens single top-level dir, wipes stale dest names before move (re-runs safe), prints top-level layout, deletes zip.
 3. `process_firmware()`: downloads OTA zip → extracts only `payload.bin` → **deletes zip immediately** → dumps partitions via `payload-dumper-go -q` (output captured, only tail shown on failure) → **deletes payload.bin immediately**. Disk-saving deletions are load-bearing; keep them. Stock → `extracted_stock/`, port → `extracted_port/` (separate dirs: stock extras share names with port partitions and would overwrite each other).
 4. `unpack_partitions()`: unpacks stock `.img` (incl. extras) → `unpacked_stock/<name>/`, port `.img` → `unpacked_port/<name>/` (fresh extract, stale content wiped). Format by magic: ext4 via `debugfs rdump` (e2fsprogs, preinstalled), erofs via `fsck.erofs --extract` (erofs-utils, in CI), sparse via `simg2img` if present. uid/gid/xattrs are NOT preserved — rebuild step must apply fs_config.
 5. `rebuild_partition_images()`: rebuilds `.img` in place from (patched) trees — port list → `extracted_port/`, `STOCK_PARTITIONS` only → `extracted_stock/` (donor extras `product`/`system_ext` in `unpacked_stock/` are never rebuilt). Format matches original by magic: erofs via `mkfs.erofs -z<EROFS_COMPRESSOR>`, ext4 via `mkfs.ext4 -d` (size = max(original, tree*1.1+32MB)). Build goes to `<name>.img.new` + atomic rename, so failures keep the old image.
@@ -20,7 +20,7 @@ Single-file Python tool: `autoporter.py` builds `super.img` from 2 Xiaomi OTAs +
 - Port (chagall, HyperOS 4): `mi_ext product system system_ext`
 - Firmware URLs (`STOCK_URL`/`PORT_URL`) and GDrive IDs (`HOS3_GDRIVE_URL`/`HOS4_GDRIVE_URL`) are constants at top of `autoporter.py`.
 - HyperOS `system.img` root contains a nested `system/` dir (`unpacked_port/system/system/app/...`, SAR-style). `moddedapps_hos*/system/system/...` mirrors it — the extra level is correct, do not "flatten" it. Other partitions (`product`, `system_ext`, ...) are flat at root.
-- EROFS rebuild uses `EROFS_COMPRESSOR = "lzma,9"` (max safe on duchamp's 6.1 kernel: MicroLZMA needs 5.16+). Do NOT switch to deflate: it needs 6.6+ — unreadable images = bootloop. Fallback if builds get too slow: `"lz4hc,12"` (decodes via plain LZ4 path).
+- EROFS rebuild uses `EROFS_COMPRESSOR = "lz4hc,12"` (fast + safe; `"lzma,9"` also readable on the 6.1 kernel since MicroLZMA needs 5.16+, but builds much slower). Do NOT switch to deflate: it needs 6.6+ — unreadable images = bootloop.
 
 ## Gotchas
 - `tools/` binaries (`lpmake`, `lpunpack`, `payload-dumper-go`) are Linux x86-64 static ELFs committed to repo — won't run on Windows/macOS; use WSL2 or CI. `lpunpack` is currently unused.
