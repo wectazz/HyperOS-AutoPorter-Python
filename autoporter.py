@@ -43,7 +43,7 @@ HOS3_GDRIVE_URL = (
     "https://drive.google.com/file/d/1GMmz3S8KnYri11cKavSdkIC9U-x0YY4Q/view?usp=sharing"
 )
 HOS4_GDRIVE_URL = (
-    "https://drive.google.com/file/d/1UCyX4rwUN3pls7UblKh4OwNBH5HRBnjA/view?usp=drive_link"
+    "https://drive.google.com/file/d/19tcM9w710v_Tcf-V4XuW02Z02Br6HPnc/view?usp=sharing"
 )
 
 # Modded apps sets per HyperOS version: (gdrive_url, output_dir, archive_name)
