@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+
+venv/
+.venv/
+.env
+
+*.zip
+*.img
+*.bin
+payload.bin
+
+moddedapps_hos3/
+moddedapps_hos4/
+extracted_partitions/
+
+tools/
