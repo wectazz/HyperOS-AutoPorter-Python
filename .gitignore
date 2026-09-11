@@ -16,3 +16,9 @@ extracted_stock/
 extracted_port/
 unpacked_stock/
 unpacked_port/
+package/
+port_meta/
+
+# flash template IS committed — re-include its payload despite the rules above
+!template/**/*.img
+!template/**/*.zip
