@@ -20,7 +20,10 @@ BASE_DIR = Path(__file__).parent.resolve()
 TOOLS_DIR = BASE_DIR / "tools"
 MODDED_HOS3_DIR = BASE_DIR / "moddedapps_hos3"
 MODDED_HOS4_DIR = BASE_DIR / "moddedapps_hos4"
-EXTRACTED_DIR = BASE_DIR / "extracted_partitions"
+EXTRACTED_STOCK_DIR = BASE_DIR / "extracted_stock"
+EXTRACTED_PORT_DIR = BASE_DIR / "extracted_port"
+UNPACKED_STOCK_DIR = BASE_DIR / "unpacked_stock"
+UNPACKED_PORT_DIR = BASE_DIR / "unpacked_port"
 
 # Download URLs
 STOCK_URL = (
@@ -42,6 +45,9 @@ HOS4_GDRIVE_URL = (
 # Target Partition lists
 STOCK_PARTITIONS = ["odm", "vendor", "odm_dlkm", "system_dlkm", "vendor_dlkm"]
 PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
+# Extra stock partitions: dumped + unpacked for reference/patching only,
+# NOT packed into super.img (super takes product/system_ext from the port)
+STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 
 
 def make_executable(path: Path) -> None:
@@ -54,7 +60,8 @@ def make_executable(path: Path) -> None:
 def setup_tools() -> None:
     """Prepare environment and ensure tools in tools/ directory are executable."""
     print("=== Step 1: Preparing Environment and Tools ===")
-    for folder in [TOOLS_DIR, MODDED_HOS3_DIR, MODDED_HOS4_DIR, EXTRACTED_DIR]:
+    for folder in [TOOLS_DIR, MODDED_HOS3_DIR, MODDED_HOS4_DIR, EXTRACTED_STOCK_DIR,
+                   EXTRACTED_PORT_DIR, UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR]:
         folder.mkdir(parents=True, exist_ok=True)
 
     # Add tools/ to system PATH
@@ -112,17 +119,25 @@ def download_and_extract_gdrive_mod(gdrive_url: str, output_dir: Path, name: str
     # Remove archive immediately to save disk space
     archive_path.unlink(missing_ok=True)
 
-    # Handle folder structure to ensure product/system etc. are directly under output_dir
+    # Handle folder structure to ensure product/system etc. are directly under output_dir.
+    # Supports both layouts: partition dirs at archive root, or a single wrapper dir.
     extracted_items = list(temp_extract.iterdir())
     if len(extracted_items) == 1 and extracted_items[0].is_dir():
-        for item in extracted_items[0].iterdir():
-            shutil.move(str(item), str(output_dir / item.name))
-        shutil.rmtree(temp_extract)
-    else:
-        for item in extracted_items:
-            shutil.move(str(item), str(output_dir / item.name))
-        shutil.rmtree(temp_extract)
+        extracted_items = list(extracted_items[0].iterdir())
 
+    for item in extracted_items:
+        dest = output_dir / item.name
+        # Fresh state: stale content from a previous run must not merge with new files
+        if dest.exists() or dest.is_symlink():
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        shutil.move(str(item), str(dest))
+    shutil.rmtree(temp_extract)
+
+    top = sorted(p.name + ("/" if p.is_dir() else "") for p in output_dir.iterdir())
+    print(f"{name} top-level layout: {', '.join(top)}")
     print(f"Modded apps for {name} extracted and archive removed.\n")
 
 
@@ -202,18 +217,184 @@ def process_firmware(
     print(f"Firmware processing for {fw_name} completed.\n")
 
 
+# Filesystem magic offsets/values for partition images
+_SPARSE_MAGIC = b"\x3a\xff\x26\xed"  # Android sparse, offset 0
+_EROFS_MAGIC = b"\xe2\xe1\xf5\xe0"  # EROFS, offset 1024
+_EXT4_MAGIC = b"\x53\xef"  # ext2/3/4, offset 1080
+
+
+def detect_image_format(img_path: Path) -> str:
+    """Detect partition image format by magic bytes: 'sparse', 'erofs' or 'ext4'."""
+    with open(img_path, "rb") as f:
+        head = f.read(1082)
+    if head[0:4] == _SPARSE_MAGIC:
+        return "sparse"
+    if head[1024:1028] == _EROFS_MAGIC:
+        return "erofs"
+    if head[1080:1082] == _EXT4_MAGIC:
+        return "ext4"
+    raise RuntimeError(f"Unsupported image format: {img_path} (not sparse/erofs/ext4)")
+
+
+def extract_ext4_image(img_path: Path, dest_dir: Path) -> int:
+    """Extract ext4 image with debugfs rdump (preserves symlinks exactly). Returns file count."""
+    debugfs_bin = shutil.which("debugfs")
+    if not debugfs_bin:
+        raise RuntimeError("debugfs not found: install e2fsprogs to unpack ext4 images")
+    subprocess.run(
+        [debugfs_bin, "-R", f"rdump / {dest_dir}", str(img_path)],
+        check=True,
+    )
+    shutil.rmtree(dest_dir / "lost+found", ignore_errors=True)
+    return sum(1 for _ in dest_dir.rglob("*") if _.is_file() or _.is_symlink())
+
+
+def extract_erofs_image(img_path: Path, dest_dir: Path) -> int:
+    """Extract EROFS image with fsck.erofs --extract. Returns file/symlink count."""
+    fsck_bin = shutil.which("fsck.erofs")
+    if not fsck_bin:
+        raise RuntimeError("fsck.erofs not found: install erofs-utils to unpack EROFS images")
+    # fsck.erofs is silent on success; show only the tail on failure
+    proc = subprocess.run(
+        [fsck_bin, f"--extract={dest_dir}", str(img_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if proc.returncode != 0:
+        print(f"fsck.erofs failed on {img_path.name} (exit {proc.returncode}). Last log lines:")
+        print("\n".join(proc.stdout.splitlines()[-30:]))
+        raise subprocess.CalledProcessError(proc.returncode, proc.args)
+    return sum(1 for p in dest_dir.rglob("*") if p.is_file() or p.is_symlink())
+
+
+def unpack_partition_image(img_path: Path, dest_dir: Path) -> int:
+    """Unpack a single partition .img into dest_dir (fresh extract). Returns file count."""
+    if dest_dir.exists():
+        shutil.rmtree(dest_dir)
+    dest_dir.mkdir(parents=True)
+
+    fmt = detect_image_format(img_path)
+    if fmt == "sparse":
+        simg_bin = shutil.which("simg2img")
+        if not simg_bin:
+            raise RuntimeError(
+                f"{img_path.name} is a sparse image but simg2img is missing: "
+                "install android-sdk-libsparse-utils"
+            )
+        raw_path = img_path.with_suffix(".raw.img")
+        try:
+            subprocess.run([simg_bin, str(img_path), str(raw_path)], check=True)
+            fmt = detect_image_format(raw_path)
+            img_path = raw_path
+        finally:
+            raw_path.unlink(missing_ok=True)
+
+    if fmt == "erofs":
+        return extract_erofs_image(img_path, dest_dir)
+    return extract_ext4_image(img_path, dest_dir)
+
+
+def unpack_partitions(partitions: List[str], img_dir: Path, out_root: Path) -> None:
+    """Unpack every partition image from img_dir into out_root/<name>/ for later patching."""
+    print(f"=== Unpacking {len(partitions)} partitions into {out_root} ===")
+    for name in partitions:
+        img_path = img_dir / f"{name}.img"
+        if not img_path.exists():
+            raise FileNotFoundError(f"Missing required partition image: {img_path}")
+        dest_dir = out_root / name
+        fmt = detect_image_format(img_path)
+        print(f"Unpacking {name}.img ({img_path.stat().st_size // 1024 // 1024}MB, {fmt})...")
+        count = unpack_partition_image(img_path, dest_dir)
+        print(f"  -> {dest_dir} ({count} files)")
+    print(f"Unpacking into {out_root} completed.\n")
+
+
+def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
+    """Rebuild a partition .img from an unpacked tree, matching the original format.
+
+    The original image is replaced atomically (build to temp file + rename),
+    so a failed build keeps the previous image intact.
+    """
+    fmt = detect_image_format(img_path)
+    if fmt == "sparse":
+        simg_bin = shutil.which("simg2img")
+        if not simg_bin:
+            raise RuntimeError(
+                f"{img_path.name} is a sparse image but simg2img is missing: "
+                "install android-sdk-libsparse-utils"
+            )
+        tmp_raw = img_path.with_suffix(".raw.img")
+        try:
+            subprocess.run([simg_bin, str(img_path), str(tmp_raw)], check=True)
+            os.replace(tmp_raw, img_path)
+        finally:
+            tmp_raw.unlink(missing_ok=True)
+        fmt = detect_image_format(img_path)
+
+    tmp_path = img_path.with_name(img_path.name + ".new")
+    try:
+        if fmt == "erofs":
+            mkfs_bin = shutil.which("mkfs.erofs")
+            if not mkfs_bin:
+                raise RuntimeError("mkfs.erofs not found: install erofs-utils to rebuild EROFS images")
+            cmd = [mkfs_bin, str(tmp_path), str(src_dir)]
+        else:  # ext4
+            mkfs_bin = shutil.which("mkfs.ext4")
+            if not mkfs_bin:
+                raise RuntimeError("mkfs.ext4 not found: install e2fsprogs to rebuild ext4 images")
+            # Size from the original image, grown if the tree no longer fits
+            tree_size = 0
+            for p in src_dir.rglob("*"):
+                try:
+                    tree_size += p.lstat().st_size
+                except OSError:
+                    pass
+            new_size = max(img_path.stat().st_size, int(tree_size * 1.1) + 32 * 1024 * 1024)
+            cmd = [mkfs_bin, "-F", "-d", str(src_dir), str(tmp_path),
+                   str((new_size + 4095) // 4096)]
+
+        # mkfs tools are chatty; show output only on failure
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.returncode != 0:
+            print(f"Rebuild of {img_path.name} failed (exit {proc.returncode}). Last log lines:")
+            print("\n".join(proc.stdout.splitlines()[-30:]))
+            raise subprocess.CalledProcessError(proc.returncode, proc.args)
+        os.replace(tmp_path, img_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def rebuild_partition_images(partitions: List[str], unpacked_root: Path, img_dir: Path) -> None:
+    """Rebuild every listed partition .img in img_dir from unpacked_root/<name>/ trees."""
+    print(f"=== Rebuilding {len(partitions)} partition images in {img_dir} ===")
+    for name in partitions:
+        src_dir = unpacked_root / name
+        if not src_dir.is_dir():
+            raise FileNotFoundError(f"Missing unpacked tree for rebuild: {src_dir}")
+        img_path = img_dir / f"{name}.img"
+        if not img_path.exists():
+            raise FileNotFoundError(f"Missing required partition image: {img_path}")
+        print(f"Rebuilding {name}.img from {src_dir}...")
+        fmt = detect_image_format(img_path)
+        rebuild_partition_image(img_path, src_dir)
+        print(f"  -> {img_path} ({img_path.stat().st_size // 1024 // 1024}MB, {fmt})")
+    print(f"Rebuilding in {img_dir} completed.\n")
+
+
 def repack_super_image(
-    partitions_dir: Path, output_super_img: Path
+    stock_dir: Path, port_dir: Path, output_super_img: Path
 ) -> None:
     """Pack extracted dynamic partitions into super.img using lpmake with Virtual A/B support.
 
-    Each partition is added twice: `<name>_a` with the real image and
-    `<name>_b` as an empty (0-byte) placeholder in the second slot group,
-    as stock Virtual A/B super images do.
+    Stock images come from stock_dir (STOCK_PARTITIONS), port images from
+    port_dir (PORT_PARTITIONS). Each partition is added twice: `<name>_a`
+    with the real image and `<name>_b` as an empty (0-byte) placeholder
+    in the second slot group, as stock Virtual A/B super images do.
     """
-    print("=== Step 4: Packing partitions into super.img ===")
+    print("=== Step 6: Packing partitions into super.img ===")
 
-    all_partitions = STOCK_PARTITIONS + PORT_PARTITIONS
     lpmake_bin = shutil.which("lpmake") or str(TOOLS_DIR / "lpmake")
 
     group_a = "qti_dynamic_partitions_a"
@@ -221,25 +402,26 @@ def repack_super_image(
     partition_args = []
     total_size = 0
 
-    for part_name in all_partitions:
-        img_path = partitions_dir / f"{part_name}.img"
-        if not img_path.exists():
-            raise FileNotFoundError(f"Missing required partition image: {img_path}")
+    for img_dir, names in ((stock_dir, STOCK_PARTITIONS), (port_dir, PORT_PARTITIONS)):
+        for part_name in names:
+            img_path = img_dir / f"{part_name}.img"
+            if not img_path.exists():
+                raise FileNotFoundError(f"Missing required partition image: {img_path}")
 
-        img_size = img_path.stat().st_size
-        # Align partition size to 4096 bytes block size
-        aligned_size = ((img_size + 4095) // 4096) * 4096
-        total_size += aligned_size
+            img_size = img_path.stat().st_size
+            # Align partition size to 4096 bytes block size
+            aligned_size = ((img_size + 4095) // 4096) * 4096
+            total_size += aligned_size
 
-        partition_args.extend([
-            "--partition",
-            f"{part_name}_a:readonly:{aligned_size}:{group_a}",
-            "--image",
-            f"{part_name}_a={img_path}",
-            # Empty _b slot placeholder: size 0, no --image on purpose
-            "--partition",
-            f"{part_name}_b:readonly:0:{group_b}",
-        ])
+            partition_args.extend([
+                "--partition",
+                f"{part_name}_a:readonly:{aligned_size}:{group_a}",
+                "--image",
+                f"{part_name}_a={img_path}",
+                # Empty _b slot placeholder: size 0, no --image on purpose
+                "--partition",
+                f"{part_name}_b:readonly:0:{group_b}",
+            ])
 
     # Calculate super device and group size with padding.
     # Both slot groups get the same size (mirrors stock layout and leaves
@@ -289,13 +471,27 @@ def main() -> None:
     download_and_extract_gdrive_mod(HOS3_GDRIVE_URL, MODDED_HOS3_DIR, "moddedapps_hos3")
     download_and_extract_gdrive_mod(HOS4_GDRIVE_URL, MODDED_HOS4_DIR, "moddedapps_hos4")
 
-    # Step 3: Download Stock & Port Firmwares with Strict Memory Cleanups
-    process_firmware(STOCK_URL, "stock_duchamp", STOCK_PARTITIONS, EXTRACTED_DIR)
-    process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_DIR)
+    # Step 3: Download Stock & Port Firmwares with Strict Memory Cleanups.
+    # Separate output dirs: stock extras (product/system_ext) share names
+    # with port partitions and would otherwise overwrite each other.
+    process_firmware(STOCK_URL, "stock_duchamp",
+                     STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS, EXTRACTED_STOCK_DIR)
+    process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_PORT_DIR)
 
-    # Step 4: Repack partitions into super.img
+    # Step 4: Unpack partition images for patching (stock + port)
+    unpack_partitions(STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS,
+                      EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
+    unpack_partitions(PORT_PARTITIONS, EXTRACTED_PORT_DIR, UNPACKED_PORT_DIR)
+
+    # Step 5: Rebuild partition images from (patched) unpacked trees.
+    # NOTE: stock product/system_ext are donors only (files are copied out of
+    # them into unpacked_port later) — never rebuilt, never packed into super.
+    rebuild_partition_images(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR)
+    rebuild_partition_images(STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)
+
+    # Step 6: Repack partitions into super.img
     super_output = BASE_DIR / "super.img"
-    repack_super_image(EXTRACTED_DIR, super_output)
+    repack_super_image(EXTRACTED_STOCK_DIR, EXTRACTED_PORT_DIR, super_output)
 
     print("HyperOS AutoPorter completed successfully!")
 
