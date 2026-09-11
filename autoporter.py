@@ -49,6 +49,13 @@ PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
 # NOT packed into super.img (super takes product/system_ext from the port)
 STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 
+# EROFS compressor for rebuilt images. Target kernel is 6.1 (duchamp), so
+# MicroLZMA is safe (needs 5.16+). Do NOT switch to deflate: it needs 6.6+ —
+# unreadable images = bootloop. lzma,9 is the maximum 1.7.1 offers; slower
+# builds than lz4hc (~tens of minutes for a full set). Drop to "lz4hc,12"
+# (safe everywhere lz4 is) or "lz4" if builds get too slow.
+EROFS_COMPRESSOR = "lz4hc,9"
+
 
 def make_executable(path: Path) -> None:
     """Ensure binary file is executable (chmod +x)."""
@@ -338,7 +345,7 @@ def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
             mkfs_bin = shutil.which("mkfs.erofs")
             if not mkfs_bin:
                 raise RuntimeError("mkfs.erofs not found: install erofs-utils to rebuild EROFS images")
-            cmd = [mkfs_bin, str(tmp_path), str(src_dir)]
+            cmd = [mkfs_bin, f"-z{EROFS_COMPRESSOR}", str(tmp_path), str(src_dir)]
         else:  # ext4
             mkfs_bin = shutil.which("mkfs.ext4")
             if not mkfs_bin:
@@ -447,7 +454,6 @@ def repack_super_image(
         "--group",
         f"{group_b}:{group_size}",
         *partition_args,
-        "--sparse",
         "--output",
         str(output_super_img),
     ]
