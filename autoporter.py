@@ -13,7 +13,6 @@ from typing import List
 
 import requests
 from tqdm import tqdm
-import gdown
 
 # Directory definitions
 BASE_DIR = Path(__file__).parent.resolve()
@@ -93,8 +92,8 @@ def download_and_extract_gdrive_mod(gdrive_url: str, output_dir: Path, name: str
     print(f"=== Downloading Modded Apps: {name} ===")
     archive_path = output_dir / f"{name}.zip"
 
-    # Download using gdown with fuzzy matching to handle large file warnings
-    gdown.download(url=gdrive_url, output=str(archive_path), fuzzy=True, quiet=False)
+    # Download using gdown CLI via subprocess to support --fuzzy flag
+    subprocess.run(["gdown", "--fuzzy", gdrive_url, "-O", str(archive_path)], check=True)
 
     if not archive_path.exists() or archive_path.stat().st_size == 0:
         raise RuntimeError(f"Failed to download modded apps archive for {name}")
