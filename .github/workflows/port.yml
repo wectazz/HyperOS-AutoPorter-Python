@@ -41,7 +41,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          python autoporter.py
+          python -u autoporter.py
 
       - name: Upload super.img
         uses: actions/upload-artifact@v4

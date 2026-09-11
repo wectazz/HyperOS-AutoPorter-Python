@@ -461,7 +461,14 @@ def repack_super_image(
     print(
         f"Executing lpmake with Virtual A/B support (--virtual-ab, groups={group_a}/{group_b}, super_size={super_size})..."
     )
-    subprocess.run(cmd, check=True)
+    # lpmake is chatty ("will resize" info + "Invalid sparse file format"
+    # noise: it probes every raw image as sparse and falls back — harmless).
+    # Capture it all; show only the tail on failure.
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        print(f"lpmake failed (exit {proc.returncode}). Last log lines:")
+        print("\n".join(proc.stdout.splitlines()[-30:]))
+        raise subprocess.CalledProcessError(proc.returncode, proc.args)
     print(
         f"Successfully generated {output_super_img} (Size: {output_super_img.stat().st_size} bytes).\n"
     )
