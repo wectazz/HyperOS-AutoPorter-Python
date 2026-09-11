@@ -196,15 +196,21 @@ def process_firmware(
 
 
 def repack_super_image(
-    partitions_dir: Path, output_super_img: Path, slot_suffix: str = "_a"
+    partitions_dir: Path, output_super_img: Path
 ) -> None:
-    """Pack extracted dynamic partitions into super.img using lpmake with Virtual A/B support."""
+    """Pack extracted dynamic partitions into super.img using lpmake with Virtual A/B support.
+
+    Each partition is added twice: `<name>_a` with the real image and
+    `<name>_b` as an empty (0-byte) placeholder in the second slot group,
+    as stock Virtual A/B super images do.
+    """
     print("=== Step 4: Packing partitions into super.img ===")
 
     all_partitions = STOCK_PARTITIONS + PORT_PARTITIONS
     lpmake_bin = shutil.which("lpmake") or str(TOOLS_DIR / "lpmake")
 
-    group_name = f"qti_dynamic_partitions{slot_suffix}"
+    group_a = "qti_dynamic_partitions_a"
+    group_b = "qti_dynamic_partitions_b"
     partition_args = []
     total_size = 0
 
@@ -218,15 +224,20 @@ def repack_super_image(
         aligned_size = ((img_size + 4095) // 4096) * 4096
         total_size += aligned_size
 
-        part_fullname = f"{part_name}{slot_suffix}"
         partition_args.extend([
             "--partition",
-            f"{part_fullname}:readonly:{aligned_size}:{group_name}",
+            f"{part_name}_a:readonly:{aligned_size}:{group_a}",
             "--image",
-            f"{part_fullname}={img_path}",
+            f"{part_name}_a={img_path}",
+            # Empty _b slot placeholder: size 0, no --image on purpose
+            "--partition",
+            f"{part_name}_b:readonly:0:{group_b}",
         ])
 
-    # Calculate super device and group size with padding
+    # Calculate super device and group size with padding.
+    # Both slot groups get the same size (mirrors stock layout and leaves
+    # room for future OTA snapshot growth); with --virtual-ab the groups
+    # may overcommit the physical super size via copy-on-write.
     padding = 64 * 1024 * 1024  # 64MB extra
     group_size = total_size + padding
     super_size = group_size + (4 * 1024 * 1024)  # metadata header allowance
@@ -243,7 +254,9 @@ def repack_super_image(
         "--device",
         f"super:{super_size}",
         "--group",
-        f"{group_name}:{group_size}",
+        f"{group_a}:{group_size}",
+        "--group",
+        f"{group_b}:{group_size}",
         *partition_args,
         "--sparse",
         "--output",
@@ -251,7 +264,7 @@ def repack_super_image(
     ]
 
     print(
-        f"Executing lpmake with Virtual A/B support (--virtual-ab, group={group_name}, super_size={super_size})..."
+        f"Executing lpmake with Virtual A/B support (--virtual-ab, groups={group_a}/{group_b}, super_size={super_size})..."
     )
     subprocess.run(cmd, check=True)
     print(
@@ -275,7 +288,7 @@ def main() -> None:
 
     # Step 4: Repack partitions into super.img
     super_output = BASE_DIR / "super.img"
-    repack_super_image(EXTRACTED_DIR, super_output, slot_suffix="_a")
+    repack_super_image(EXTRACTED_DIR, super_output)
 
     print("HyperOS AutoPorter completed successfully!")
 
