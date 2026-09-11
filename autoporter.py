@@ -590,6 +590,10 @@ def assemble_package(
         shutil.rmtree(package_dir / "META-INF", ignore_errors=True)
         print("Fastboot-only package: META-INF removed.")
     else:
+        # NOTE: template/META-INF/com/android/ is empty in git (git does not
+        # track empty dirs), so create it — copy2 won't create the path.
+        dest_dir = package_dir / "META-INF/com/android"
+        dest_dir.mkdir(parents=True, exist_ok=True)
         for meta_name in ("metadata", "metadata.pb"):
             src = meta_dir / "META-INF/com/android" / meta_name
             if not src.exists():
