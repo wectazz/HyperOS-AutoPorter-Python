@@ -58,3 +58,10 @@ jobs:
           name: super-image-${{ inputs.hyper_version }}
           path: super.img
           if-no-files-found: ignore
+
+      - name: Upload recovery ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-zip-${{ inputs.hyper_version }}
+          path: HyperOS-port-duchamp-*.zip
+          if-no-files-found: error
