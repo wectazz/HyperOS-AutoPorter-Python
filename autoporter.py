@@ -79,7 +79,7 @@ def download_file_with_progress(url: str, dest_path: Path) -> Path:
         total=total_size,
         unit="iB",
         unit_scale=True,
-        unit_divisibility=1024,
+        unit_divisor=1024,
     ) as bar:
         for chunk in response.iter_content(chunk_size=1024 * 1024):
             size = f.write(chunk)
