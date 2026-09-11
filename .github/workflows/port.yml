@@ -11,6 +11,14 @@ on:
         options:
           - hos4
           - hos3
+      package_type:
+        description: 'Package type (universal = recovery + fastboot, fastboot-only = no META-INF)'
+        required: true
+        default: 'universal'
+        type: choice
+        options:
+          - universal
+          - fastboot-only
 
 jobs:
   build:
@@ -50,7 +58,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }}
+          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }}
 
       - name: Upload super.img
         uses: actions/upload-artifact@v4
@@ -59,9 +67,9 @@ jobs:
           path: super.img
           if-no-files-found: ignore
 
-      - name: Upload recovery ZIP
+      - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: recovery-zip-${{ inputs.hyper_version }}
+          name: package-${{ inputs.hyper_version }}-${{ inputs.package_type }}
           path: HyperOS-port-duchamp-*.zip
           if-no-files-found: error
