@@ -505,6 +505,21 @@ def repack_super_image(
     print(
         f"Executing lpmake with Virtual A/B support (--virtual-ab, groups={group_a}/{group_b}, super_size={super_size})..."
     )
+    # Fail fast with a clear message when the disk cannot fit the output:
+    # lpmake itself reports this only as a cryptic
+    # `sparse_file_write failed (error code -22)`.
+    print("Partition images for super:")
+    for img_dir, names in ((stock_dir, STOCK_PARTITIONS), (port_dir, PORT_PARTITIONS)):
+        for part_name in names:
+            img_path = img_dir / f"{part_name}.img"
+            print(f"  {part_name}_a: {img_path.stat().st_size} bytes ({img_path})")
+    usage = shutil.disk_usage(output_super_img.parent)
+    print(f"Disk at {output_super_img.parent}: total={usage.total} "
+          f"used={usage.used} free={usage.free}; need ~{super_size} bytes for super.img")
+    if usage.free < super_size + 512 * 1024 * 1024:
+        raise RuntimeError(
+            f"Not enough free disk for super.img: free={usage.free}, "
+            f"need~{super_size + 512 * 1024 * 1024}. Free space and retry.")
     # lpmake is chatty ("will resize" info + "Invalid sparse file format"
     # noise: it probes every raw image as sparse and falls back — harmless).
     # Capture it all; show only the tail on failure.
@@ -512,6 +527,11 @@ def repack_super_image(
     if proc.returncode != 0:
         print(f"lpmake failed (exit {proc.returncode}). Last log lines:")
         print("\n".join(proc.stdout.splitlines()[-30:]))
+        try:
+            usage = shutil.disk_usage(output_super_img.parent)
+            print(f"Disk at failure: total={usage.total} used={usage.used} free={usage.free}")
+        except OSError:
+            pass
         raise subprocess.CalledProcessError(proc.returncode, proc.args)
     print(
         f"Successfully generated {output_super_img} (Size: {output_super_img.stat().st_size} bytes).\n"
@@ -650,6 +670,13 @@ def main() -> None:
     # them into unpacked_port later) — never rebuilt, never packed into super.
     rebuild_partition_images(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR)
     rebuild_partition_images(STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)
+
+    # Step 5b: Drop unpacked trees — the rebuild is done and nothing below
+    # uses them; lpmake needs ~super_size bytes free right after this.
+    for unpacked_dir in (UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR):
+        if unpacked_dir.exists():
+            print(f"Removing {unpacked_dir} to free disk space...")
+            shutil.rmtree(unpacked_dir)
 
     # Step 6: Repack partitions into super.img
     super_output = BASE_DIR / "super.img"
