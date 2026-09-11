@@ -7,9 +7,7 @@ import os
 import sys
 import shutil
 import zipfile
-import tarfile
 import subprocess
-import urllib.request
 from pathlib import Path
 from typing import List
 
@@ -45,60 +43,26 @@ HOS4_GDRIVE_URL = (
 STOCK_PARTITIONS = ["odm", "vendor", "odm_dlkm", "system_dlkm", "vendor_dlkm"]
 PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
 
-# External Tool URLs (Linux AMD64)
-PAYLOAD_DUMPER_GO_URL = (
-    "https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/"
-    "payload-dumper-go_1.3.0_linux_amd64.tar.gz"
-)
-LPMAKE_URL = "https://github.com/unix3dgamer/lptools/raw/master/lpmake"
-LPUNPACK_URL = "https://github.com/unix3dgamer/lptools/raw/master/lpunpack"
+
+def make_executable(path: Path) -> None:
+    """Ensure binary file is executable (chmod +x)."""
+    if path.exists() and path.is_file():
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | 0o755)
 
 
-def setup_environment() -> None:
-    """Create working directories and set up PATH."""
+def setup_tools() -> None:
+    """Prepare environment and ensure tools in tools/ directory are executable."""
+    print("=== Step 1: Preparing Environment and Tools ===")
     for folder in [TOOLS_DIR, MODDED_HOS3_DIR, MODDED_HOS4_DIR, EXTRACTED_DIR]:
         folder.mkdir(parents=True, exist_ok=True)
 
     # Add tools/ to system PATH
     os.environ["PATH"] = f"{TOOLS_DIR}:{os.environ.get('PATH', '')}"
 
-
-def make_executable(path: Path) -> None:
-    """Ensure binary file is executable (chmod +x)."""
-    if path.exists():
-        st = os.stat(path)
-        os.chmod(path, st.st_mode | 0o755)
-
-
-def download_tools() -> None:
-    """Download required Linux binaries into tools/ directory."""
-    print("=== Step 1: Preparing Environment and Tools ===")
-    setup_environment()
-
-    # Download payload-dumper-go
-    payload_dumper_bin = TOOLS_DIR / "payload-dumper-go"
-    if not payload_dumper_bin.exists():
-        print("Downloading payload-dumper-go...")
-        archive_path = TOOLS_DIR / "payload-dumper.tar.gz"
-        urllib.request.urlretrieve(PAYLOAD_DUMPER_GO_URL, archive_path)
-        with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(path=TOOLS_DIR)
-        archive_path.unlink(missing_ok=True)
-        make_executable(payload_dumper_bin)
-
-    # Download lpmake
-    lpmake_bin = TOOLS_DIR / "lpmake"
-    if not lpmake_bin.exists() and not shutil.which("lpmake"):
-        print("Downloading lpmake...")
-        urllib.request.urlretrieve(LPMAKE_URL, lpmake_bin)
-        make_executable(lpmake_bin)
-
-    # Download lpunpack
-    lpunpack_bin = TOOLS_DIR / "lpunpack"
-    if not lpunpack_bin.exists() and not shutil.which("lpunpack"):
-        print("Downloading lpunpack...")
-        urllib.request.urlretrieve(LPUNPACK_URL, lpunpack_bin)
-        make_executable(lpunpack_bin)
+    # Set chmod +x on binaries present in tools/
+    for tool_file in TOOLS_DIR.iterdir():
+        make_executable(tool_file)
 
     print("Tools preparation complete.\n")
 
@@ -231,14 +195,16 @@ def process_firmware(
     print(f"Firmware processing for {fw_name} completed.\n")
 
 
-def repack_super_image(partitions_dir: Path, output_super_img: Path) -> None:
-    """Pack extracted dynamic partitions into super.img using lpmake."""
+def repack_super_image(
+    partitions_dir: Path, output_super_img: Path, slot_suffix: str = "_a"
+) -> None:
+    """Pack extracted dynamic partitions into super.img using lpmake with Virtual A/B support."""
     print("=== Step 4: Packing partitions into super.img ===")
 
     all_partitions = STOCK_PARTITIONS + PORT_PARTITIONS
     lpmake_bin = shutil.which("lpmake") or str(TOOLS_DIR / "lpmake")
 
-    group_name = "qti_dynamic_partitions"
+    group_name = f"qti_dynamic_partitions{slot_suffix}"
     partition_args = []
     total_size = 0
 
@@ -252,11 +218,12 @@ def repack_super_image(partitions_dir: Path, output_super_img: Path) -> None:
         aligned_size = ((img_size + 4095) // 4096) * 4096
         total_size += aligned_size
 
+        part_fullname = f"{part_name}{slot_suffix}"
         partition_args.extend([
             "--partition",
-            f"{part_name}:readonly:{aligned_size}:{group_name}",
+            f"{part_fullname}:readonly:{aligned_size}:{group_name}",
             "--image",
-            f"{part_name}={img_path}",
+            f"{part_fullname}={img_path}",
         ])
 
     # Calculate super device and group size with padding
@@ -271,7 +238,8 @@ def repack_super_image(partitions_dir: Path, output_super_img: Path) -> None:
         "--super-name",
         "super",
         "--metadata-slots",
-        "2",
+        "3",
+        "--virtual-ab",
         "--device",
         f"super:{super_size}",
         "--group",
@@ -282,16 +250,20 @@ def repack_super_image(partitions_dir: Path, output_super_img: Path) -> None:
         str(output_super_img),
     ]
 
-    print(f"Executing lpmake with super_size={super_size}, group_size={group_size}...")
+    print(
+        f"Executing lpmake with Virtual A/B support (--virtual-ab, group={group_name}, super_size={super_size})..."
+    )
     subprocess.run(cmd, check=True)
-    print(f"Successfully generated {output_super_img} (Size: {output_super_img.stat().st_size} bytes).\n")
+    print(
+        f"Successfully generated {output_super_img} (Size: {output_super_img.stat().st_size} bytes).\n"
+    )
 
 
 def main() -> None:
     print("Starting HyperOS AutoPorter Workflow...\n")
 
     # Step 1: Tools Setup
-    download_tools()
+    setup_tools()
 
     # Step 2: Download & Extract Modded Apps
     download_and_extract_gdrive_mod(HOS3_GDRIVE_URL, MODDED_HOS3_DIR, "moddedapps_hos3")
@@ -303,7 +275,7 @@ def main() -> None:
 
     # Step 4: Repack partitions into super.img
     super_output = BASE_DIR / "super.img"
-    repack_super_image(EXTRACTED_DIR, super_output)
+    repack_super_image(EXTRACTED_DIR, super_output, slot_suffix="_a")
 
     print("HyperOS AutoPorter completed successfully!")
 
