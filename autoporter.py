@@ -150,6 +150,7 @@ def dump_partitions_from_payload(
 
     cmd = [
         dumper_cmd,
+        "-q",
         "-p",
         ",".join(partitions),
         "-o",
@@ -157,7 +158,13 @@ def dump_partitions_from_payload(
         str(payload_path),
     ]
 
-    subprocess.run(cmd, check=True)
+    # Capture output: payload-dumper-go prints thousands of progress lines
+    # ("...") that would flood CI logs. Show only the tail on failure.
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        print(f"payload-dumper-go failed (exit {proc.returncode}). Last log lines:")
+        print("\n".join(proc.stdout.splitlines()[-30:]))
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
     print(f"Partitions {partitions} extracted successfully.")
 
 
