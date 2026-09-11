@@ -71,19 +71,6 @@ SUPER_SPLIT_PARTS = 54
 # the plain LZ4 path everywhere lz4 works). Do NOT switch to deflate: it needs
 # 6.6+ — unreadable images = bootloop.
 EROFS_COMPRESSOR = "lz4hc,12"
-# Fallback EROFS compressor for huge images. tools/lpmake merges contiguous
-# data runs with a 32-bit length: an image >= 4GiB (more precisely, a 4GiB-
-# exact dense run inside it) wraps the counter to a zero-length chunk, then
-# mmap(0) fails with EINVAL and lpmake dies with the cryptic
-# "sparse_file_write failed (error code -22)" (exit 73) — proven locally with
-# a 4GiB-exact test image. Any image under 4GiB cannot trigger this (a run is
-# bounded by its file size), so images at/over the threshold below are rebuilt
-# with lzma (still readable on the 6.1 kernel, much denser than lz4hc).
-EROFS_FALLBACK_COMPRESSOR = "lzma,9"
-EROFS_LZMA_THRESHOLD = int(3.5 * 1024 ** 3)
-# Hard per-image limit for tools/lpmake (see above). Enforced fail-fast in
-# repack_super_image() with a clear message instead of lpmake's cryptic -22.
-IMAGE_4G_LIMIT = 4 * 1024 ** 3
 
 
 def make_executable(path: Path) -> None:
@@ -370,17 +357,6 @@ def unpack_partitions(partitions: List[str], img_dir: Path, out_root: Path) -> N
     print(f"Unpacking into {out_root} completed.\n")
 
 
-def build_erofs_image(mkfs_bin: str, out_path: Path, src_dir: Path, compressor: str) -> None:
-    """Build an EROFS image with the given compressor; show mkfs output only on failure."""
-    cmd = [mkfs_bin, f"-z{compressor}", str(out_path), str(src_dir)]
-    proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if proc.returncode != 0:
-        print(f"mkfs.erofs ({compressor}) failed on {src_dir} (exit {proc.returncode}). Last log lines:")
-        print("\n".join(proc.stdout.splitlines()[-30:]))
-        raise subprocess.CalledProcessError(proc.returncode, proc.args)
-
-
 def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
     """Rebuild a partition .img from an unpacked tree, matching the original format.
 
@@ -409,14 +385,7 @@ def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
             mkfs_bin = shutil.which("mkfs.erofs")
             if not mkfs_bin:
                 raise RuntimeError("mkfs.erofs not found: install erofs-utils to rebuild EROFS images")
-            build_erofs_image(mkfs_bin, tmp_path, src_dir, EROFS_COMPRESSOR)
-            if tmp_path.stat().st_size >= EROFS_LZMA_THRESHOLD:
-                print(f"  {img_path.name} is {tmp_path.stat().st_size} bytes; rebuilding "
-                      f"with {EROFS_FALLBACK_COMPRESSOR} to stay under 4GiB for lpmake...")
-                tmp_path.unlink(missing_ok=True)
-                build_erofs_image(mkfs_bin, tmp_path, src_dir, EROFS_FALLBACK_COMPRESSOR)
-                print(f"  -> {img_path.name} with {EROFS_FALLBACK_COMPRESSOR}: "
-                      f"{tmp_path.stat().st_size} bytes")
+            cmd = [mkfs_bin, f"-z{EROFS_COMPRESSOR}", str(tmp_path), str(src_dir)]
         else:  # ext4
             mkfs_bin = shutil.which("mkfs.ext4")
             if not mkfs_bin:
@@ -432,13 +401,13 @@ def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
             cmd = [mkfs_bin, "-F", "-d", str(src_dir), str(tmp_path),
                    str((new_size + 4095) // 4096)]
 
-            # mkfs.ext4 is chatty; show output only on failure
-            proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            if proc.returncode != 0:
-                print(f"Rebuild of {img_path.name} failed (exit {proc.returncode}). Last log lines:")
-                print("\n".join(proc.stdout.splitlines()[-30:]))
-                raise subprocess.CalledProcessError(proc.returncode, proc.args)
+        # mkfs tools are chatty; show output only on failure
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if proc.returncode != 0:
+            print(f"Rebuild of {img_path.name} failed (exit {proc.returncode}). Last log lines:")
+            print("\n".join(proc.stdout.splitlines()[-30:]))
+            raise subprocess.CalledProcessError(proc.returncode, proc.args)
         os.replace(tmp_path, img_path)
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -487,13 +456,6 @@ def repack_super_image(
                 raise FileNotFoundError(f"Missing required partition image: {img_path}")
 
             img_size = img_path.stat().st_size
-            if img_size >= IMAGE_4G_LIMIT:
-                raise RuntimeError(
-                    f"{img_path} is {img_size} bytes (>= 4GiB): tools/lpmake cannot pack "
-                    f"images this big — a 4GiB contiguous data run wraps its 32-bit "
-                    f"length counter to zero and lpmake dies with 'sparse_file_write "
-                    f"failed (error code -22)'. Shrink it below 4GiB (better "
-                    f"compression/debloat) and retry.")
             # Align partition size to 4096 bytes block size
             aligned_size = ((img_size + 4095) // 4096) * 4096
             total_size += aligned_size
