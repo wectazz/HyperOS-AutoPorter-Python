@@ -12,4 +12,7 @@ payload.bin
 
 moddedapps_hos3/
 moddedapps_hos4/
-extracted_partitions/
+extracted_stock/
+extracted_port/
+unpacked_stock/
+unpacked_port/
