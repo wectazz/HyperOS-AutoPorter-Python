@@ -569,6 +569,31 @@ def assemble_package(
     return package_dir
 
 
+def create_recovery_zip(package_dir: Path, output_zip: Path) -> Path:
+    """Pack the assembled package/ into a recovery-flashable ZIP.
+
+    Maximum DEFLATE compression (level 9). The updater-script + ARM
+    update-binary already in META-INF make it flashable in custom
+    recoveries (TWRP/OrangeFox); fastboot users unzip and run the install
+    scripts instead. Sorted walk keeps the archive reproducible.
+    """
+    print(f"=== Packing recovery ZIP (deflate-9): {output_zip.name} ===")
+    if output_zip.exists():
+        output_zip.unlink()
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED,
+                          compresslevel=9, allowZip64=True) as z:
+        for root, dirs, files in os.walk(package_dir):
+            dirs.sort()
+            for name in sorted(files):
+                full = Path(root) / name
+                arc = full.relative_to(package_dir).as_posix()
+                z.write(full, arc,
+                        compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+    print(f"Recovery ZIP ready: {output_zip} "
+          f"({output_zip.stat().st_size // 1024 // 1024}MB)\n")
+    return output_zip
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="HyperOS AutoPorter")
     parser.add_argument(
@@ -611,7 +636,10 @@ def main() -> None:
     repack_super_image(EXTRACTED_STOCK_DIR, EXTRACTED_PORT_DIR, super_output)
 
     # Step 7: Assemble the final flashable package (template + META-INF + super chunks)
-    assemble_package(super_output, PORT_META_DIR)
+    package_dir = assemble_package(super_output, PORT_META_DIR)
+
+    # Step 8: Pack it into a recovery-flashable ZIP (max compression)
+    create_recovery_zip(package_dir, BASE_DIR / f"HyperOS-port-duchamp-{args.hyper_version}.zip")
 
     print("HyperOS AutoPorter completed successfully!")
 
