@@ -19,6 +19,9 @@ unpacked_port/
 package/
 port_meta/
 
+# local SDK bundle (878MB, too big for git, not part of the build)
+otatools/
+
 # flash template IS committed — re-include its payload despite the rules above
 !template/**/*.img
 !template/**/*.zip
