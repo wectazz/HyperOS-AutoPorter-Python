@@ -2,8 +2,6 @@ name: HyperOS AutoPorter Workflow
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ "main", "master" ]
 
 jobs:
   build:
