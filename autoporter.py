@@ -547,22 +547,35 @@ def assemble_package(
     meta_dir: Path,
     template_dir: Path = TEMPLATE_DIR,
     package_dir: Path = PACKAGE_DIR,
+    package_type: str = "universal",
 ) -> Path:
-    """Assemble the final flashable package: fresh template copy + port META-INF
-    + super.img split into images/super.img.0..53 (as the install scripts expect)."""
+    """Assemble the final flashable package: fresh template copy + super.img
+    split into images/super.img.0..53 (as the install scripts expect).
+
+    package_type "universal" keeps META-INF (recovery updater-script +
+    update-binary AND port metadata) so the ZIP flashes in TWRP/OrangeFox
+    and works via fastboot scripts after unzipping. "fastboot-only" drops
+    the whole META-INF dir (recovery flashing disabled on purpose).
+    """
     print("=== Assembling flashable package ===")
+    if package_type not in ("universal", "fastboot-only"):
+        raise ValueError(f"Unknown package_type: {package_type}")
     if not template_dir.is_dir():
         raise FileNotFoundError(f"Missing flash template: {template_dir}")
     if package_dir.exists():
         shutil.rmtree(package_dir)
     shutil.copytree(template_dir, package_dir)
 
-    for meta_name in ("metadata", "metadata.pb"):
-        src = meta_dir / "META-INF/com/android" / meta_name
-        if not src.exists():
-            raise FileNotFoundError(f"Missing port META-INF file: {src}")
-        shutil.copy2(src, package_dir / "META-INF/com/android" / meta_name)
-    print("Port META-INF (metadata, metadata.pb) installed.")
+    if package_type == "fastboot-only":
+        shutil.rmtree(package_dir / "META-INF", ignore_errors=True)
+        print("Fastboot-only package: META-INF removed.")
+    else:
+        for meta_name in ("metadata", "metadata.pb"):
+            src = meta_dir / "META-INF/com/android" / meta_name
+            if not src.exists():
+                raise FileNotFoundError(f"Missing port META-INF file: {src}")
+            shutil.copy2(src, package_dir / "META-INF/com/android" / meta_name)
+        print("Port META-INF (metadata, metadata.pb) installed.")
 
     split_file(super_img, package_dir / "images", SUPER_SPLIT_PARTS, "super.img.")
     print(f"Flashable package ready: {package_dir}\n")
@@ -570,14 +583,13 @@ def assemble_package(
 
 
 def create_recovery_zip(package_dir: Path, output_zip: Path) -> Path:
-    """Pack the assembled package/ into a recovery-flashable ZIP.
-
-    Maximum DEFLATE compression (level 9). The updater-script + ARM
-    update-binary already in META-INF make it flashable in custom
-    recoveries (TWRP/OrangeFox); fastboot users unzip and run the install
-    scripts instead. Sorted walk keeps the archive reproducible.
+    """Pack the assembled package/ into a ZIP with maximum DEFLATE compression
+    (level 9). The universal package is recovery-flashable (updater-script +
+    ARM update-binary already in META-INF); the fastboot-only package has no
+    META-INF and is distributed as a plain archive (unzip + run install scripts).
+    Sorted walk keeps the archive reproducible.
     """
-    print(f"=== Packing recovery ZIP (deflate-9): {output_zip.name} ===")
+    print(f"=== Packing ZIP (deflate-9): {output_zip.name} ===")
     if output_zip.exists():
         output_zip.unlink()
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED,
@@ -589,7 +601,7 @@ def create_recovery_zip(package_dir: Path, output_zip: Path) -> Path:
                 arc = full.relative_to(package_dir).as_posix()
                 z.write(full, arc,
                         compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
-    print(f"Recovery ZIP ready: {output_zip} "
+    print(f"ZIP ready: {output_zip} "
           f"({output_zip.stat().st_size // 1024 // 1024}MB)\n")
     return output_zip
 
@@ -602,8 +614,16 @@ def main() -> None:
         default="hos4",
         help="HyperOS version: selects the modded apps set (default: hos4)",
     )
+    parser.add_argument(
+        "--package-type",
+        choices=["universal", "fastboot-only"],
+        default="universal",
+        help="Package type: 'universal' keeps META-INF (recovery + fastboot), "
+             "'fastboot-only' removes META-INF (default: universal)",
+    )
     args = parser.parse_args()
-    print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version})...\n")
+    print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version}, "
+          f"package: {args.package_type})...\n")
 
     # Step 1: Tools Setup
     setup_tools()
@@ -635,11 +655,16 @@ def main() -> None:
     super_output = BASE_DIR / "super.img"
     repack_super_image(EXTRACTED_STOCK_DIR, EXTRACTED_PORT_DIR, super_output)
 
-    # Step 7: Assemble the final flashable package (template + META-INF + super chunks)
-    package_dir = assemble_package(super_output, PORT_META_DIR)
+    # Step 7: Assemble the final flashable package (template + super chunks,
+    # with or without META-INF depending on package type)
+    package_dir = assemble_package(super_output, PORT_META_DIR,
+                                   package_type=args.package_type)
 
-    # Step 8: Pack it into a recovery-flashable ZIP (max compression)
-    create_recovery_zip(package_dir, BASE_DIR / f"HyperOS-port-duchamp-{args.hyper_version}.zip")
+    # Step 8: Pack it into a ZIP (max compression). The name marks
+    # fastboot-only builds; the universal ZIP is recovery-flashable.
+    zip_suffix = "" if args.package_type == "universal" else f"-{args.package_type}"
+    create_recovery_zip(package_dir,
+                        BASE_DIR / f"HyperOS-port-duchamp-{args.hyper_version}{zip_suffix}.zip")
 
     print("HyperOS AutoPorter completed successfully!")
 
