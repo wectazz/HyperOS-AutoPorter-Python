@@ -436,7 +436,11 @@ def repack_super_image(
     # may overcommit the physical super size via copy-on-write.
     padding = 64 * 1024 * 1024  # 64MB extra
     group_size = total_size + padding
+    # Round super up to whole GiB like factory images / GUI tools (DNA) do:
+    # lpmake takes --device size literally and never rounds by itself.
     super_size = group_size + (4 * 1024 * 1024)  # metadata header allowance
+    gib = 1024 * 1024 * 1024
+    super_size = ((super_size + gib - 1) // gib) * gib
 
     cmd = [
         lpmake_bin,
