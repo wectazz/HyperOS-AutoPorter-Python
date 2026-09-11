@@ -3,6 +3,7 @@
 HyperOS AutoPorter - Automated Firmware Porting Tool
 """
 
+import argparse
 import os
 import sys
 import shutil
@@ -42,6 +43,11 @@ HOS4_GDRIVE_URL = (
     "https://drive.google.com/file/d/1UCyX4rwUN3pls7UblKh4OwNBH5HRBnjA/view?usp=drive_link"
 )
 
+# Modded apps sets per HyperOS version: (gdrive_url, output_dir, archive_name)
+MODDED_APPS = {
+    "hos3": (HOS3_GDRIVE_URL, MODDED_HOS3_DIR, "moddedapps_hos3"),
+    "hos4": (HOS4_GDRIVE_URL, MODDED_HOS4_DIR, "moddedapps_hos4"),
+}
 # Target Partition lists
 STOCK_PARTITIONS = ["odm", "vendor", "odm_dlkm", "system_dlkm", "vendor_dlkm"]
 PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
@@ -50,11 +56,11 @@ PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
 STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 
 # EROFS compressor for rebuilt images. Target kernel is 6.1 (duchamp), so
-# MicroLZMA is safe (needs 5.16+). Do NOT switch to deflate: it needs 6.6+ —
-# unreadable images = bootloop. lzma,9 is the maximum 1.7.1 offers; slower
-# builds than lz4hc (~tens of minutes for a full set). Drop to "lz4hc,12"
-# (safe everywhere lz4 is) or "lz4" if builds get too slow.
-EROFS_COMPRESSOR = "lz4hc,9"
+# MicroLZMA ("lzma,9", the maximum 1.7.1 offers) would also be readable, but
+# builds take much longer — "lz4hc,12" is the fast safe fallback (decodes via
+# the plain LZ4 path everywhere lz4 works). Do NOT switch to deflate: it needs
+# 6.6+ — unreadable images = bootloop.
+EROFS_COMPRESSOR = "lz4hc,12"
 
 
 def make_executable(path: Path) -> None:
@@ -479,14 +485,22 @@ def repack_super_image(
 
 
 def main() -> None:
-    print("Starting HyperOS AutoPorter Workflow...\n")
+    parser = argparse.ArgumentParser(description="HyperOS AutoPorter")
+    parser.add_argument(
+        "--hyper-version",
+        choices=sorted(MODDED_APPS),
+        default="hos4",
+        help="HyperOS version: selects the modded apps set (default: hos4)",
+    )
+    args = parser.parse_args()
+    print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version})...\n")
 
     # Step 1: Tools Setup
     setup_tools()
 
-    # Step 2: Download & Extract Modded Apps
-    download_and_extract_gdrive_mod(HOS3_GDRIVE_URL, MODDED_HOS3_DIR, "moddedapps_hos3")
-    download_and_extract_gdrive_mod(HOS4_GDRIVE_URL, MODDED_HOS4_DIR, "moddedapps_hos4")
+    # Step 2: Download & Extract Modded Apps for the selected HyperOS version
+    gdrive_url, mod_dir, mod_name = MODDED_APPS[args.hyper_version]
+    download_and_extract_gdrive_mod(gdrive_url, mod_dir, mod_name)
 
     # Step 3: Download Stock & Port Firmwares with Strict Memory Cleanups.
     # Separate output dirs: stock extras (product/system_ext) share names
