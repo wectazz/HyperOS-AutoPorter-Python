@@ -25,6 +25,9 @@ EXTRACTED_STOCK_DIR = BASE_DIR / "extracted_stock"
 EXTRACTED_PORT_DIR = BASE_DIR / "extracted_port"
 UNPACKED_STOCK_DIR = BASE_DIR / "unpacked_stock"
 UNPACKED_PORT_DIR = BASE_DIR / "unpacked_port"
+TEMPLATE_DIR = BASE_DIR / "template"
+PACKAGE_DIR = BASE_DIR / "package"
+PORT_META_DIR = BASE_DIR / "port_meta"
 
 # Download URLs
 STOCK_URL = (
@@ -55,6 +58,13 @@ PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
 # NOT packed into super.img (super takes product/system_ext from the port)
 STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 
+# Extra files taken from the port OTA zip (before it is deleted) for the
+# final flashable package: recovery META-INF descriptor of the port build
+PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metadata.pb"]
+
+# Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
+SUPER_SPLIT_PARTS = 54
+
 # EROFS compressor for rebuilt images. Target kernel is 6.1 (duchamp), so
 # MicroLZMA ("lzma,9", the maximum 1.7.1 offers) would also be readable, but
 # builds take much longer — "lz4hc,12" is the fast safe fallback (decodes via
@@ -74,7 +84,8 @@ def setup_tools() -> None:
     """Prepare environment and ensure tools in tools/ directory are executable."""
     print("=== Step 1: Preparing Environment and Tools ===")
     for folder in [TOOLS_DIR, MODDED_HOS3_DIR, MODDED_HOS4_DIR, EXTRACTED_STOCK_DIR,
-                   EXTRACTED_PORT_DIR, UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR]:
+                   EXTRACTED_PORT_DIR, UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR,
+                   PORT_META_DIR]:
         folder.mkdir(parents=True, exist_ok=True)
 
     # Add tools/ to system PATH
@@ -168,6 +179,16 @@ def extract_payload_from_zip(zip_path: Path, output_payload_path: Path) -> Path:
     return output_payload_path
 
 
+def extract_files_from_zip(zip_path: Path, names: List[str], dest_dir: Path) -> None:
+    """Extract specific files from a ZIP, preserving internal paths."""
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        missing = [n for n in names if n not in zip_ref.namelist()]
+        if missing:
+            raise RuntimeError(f"Files not found inside {zip_path.name}: {missing}")
+        for name in names:
+            zip_ref.extract(name, dest_dir)
+
+
 def dump_partitions_from_payload(
     payload_path: Path, partitions: List[str], output_dir: Path
 ) -> None:
@@ -197,9 +218,15 @@ def dump_partitions_from_payload(
 
 
 def process_firmware(
-    fw_url: str, fw_name: str, partitions: List[str], output_dir: Path
+    fw_url: str,
+    fw_name: str,
+    partitions: List[str],
+    output_dir: Path,
+    extra_files: List[str] | None = None,
+    extra_dir: Path | None = None,
 ) -> None:
-    """Download firmware, extract payload.bin, remove ZIP immediately, extract partitions, remove payload."""
+    """Download firmware, extract payload.bin (+ optional extra files), remove ZIP
+    immediately, extract partitions, remove payload."""
     print(f"=== Processing Firmware: {fw_name} ===")
     zip_path = BASE_DIR / f"{fw_name}.zip"
     payload_path = BASE_DIR / f"{fw_name}_payload.bin"
@@ -210,6 +237,13 @@ def process_firmware(
 
         # Step 2: Extract payload.bin
         extract_payload_from_zip(zip_path, payload_path)
+
+        # Step 2b: Extract extra files (e.g. META-INF) before the ZIP is deleted
+        if extra_files:
+            if extra_dir is None:
+                raise ValueError("extra_dir is required when extra_files is given")
+            print(f"Extracting extra files from {zip_path.name}: {', '.join(extra_files)}...")
+            extract_files_from_zip(zip_path, extra_files, extra_dir)
 
     finally:
         # Memory optimization: Delete firmware ZIP immediately
@@ -484,6 +518,57 @@ def repack_super_image(
     )
 
 
+def split_file(src_path: Path, dest_dir: Path, parts: int, prefix: str) -> None:
+    """Split a file into exactly `parts` chunks named <prefix>0 .. <prefix>{parts-1}.
+
+    Chunk size is ceil(total / parts), so the last chunk is smaller (never empty
+    for real firmware sizes). Streams with a fixed buffer — safe for multi-GB files.
+    """
+    total = src_path.stat().st_size
+    chunk_size = (total + parts - 1) // parts
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with open(src_path, "rb") as f:
+        for i in range(parts):
+            remaining = total - f.tell()
+            to_write = min(chunk_size, remaining) if remaining > 0 else 0
+            with open(dest_dir / f"{prefix}{i}", "wb") as out:
+                left = to_write
+                while left > 0:
+                    buf = f.read(min(8 * 1024 * 1024, left))
+                    if not buf:
+                        break
+                    out.write(buf)
+                    left -= len(buf)
+    print(f"Split {src_path.name} ({total} bytes) into {parts} parts in {dest_dir}.")
+
+
+def assemble_package(
+    super_img: Path,
+    meta_dir: Path,
+    template_dir: Path = TEMPLATE_DIR,
+    package_dir: Path = PACKAGE_DIR,
+) -> Path:
+    """Assemble the final flashable package: fresh template copy + port META-INF
+    + super.img split into images/super.img.0..53 (as the install scripts expect)."""
+    print("=== Assembling flashable package ===")
+    if not template_dir.is_dir():
+        raise FileNotFoundError(f"Missing flash template: {template_dir}")
+    if package_dir.exists():
+        shutil.rmtree(package_dir)
+    shutil.copytree(template_dir, package_dir)
+
+    for meta_name in ("metadata", "metadata.pb"):
+        src = meta_dir / "META-INF/com/android" / meta_name
+        if not src.exists():
+            raise FileNotFoundError(f"Missing port META-INF file: {src}")
+        shutil.copy2(src, package_dir / "META-INF/com/android" / meta_name)
+    print("Port META-INF (metadata, metadata.pb) installed.")
+
+    split_file(super_img, package_dir / "images", SUPER_SPLIT_PARTS, "super.img.")
+    print(f"Flashable package ready: {package_dir}\n")
+    return package_dir
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="HyperOS AutoPorter")
     parser.add_argument(
@@ -507,7 +592,8 @@ def main() -> None:
     # with port partitions and would otherwise overwrite each other.
     process_firmware(STOCK_URL, "stock_duchamp",
                      STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS, EXTRACTED_STOCK_DIR)
-    process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_PORT_DIR)
+    process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_PORT_DIR,
+                     extra_files=PORT_META_FILES, extra_dir=PORT_META_DIR)
 
     # Step 4: Unpack partition images for patching (stock + port)
     unpack_partitions(STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS,
@@ -523,6 +609,9 @@ def main() -> None:
     # Step 6: Repack partitions into super.img
     super_output = BASE_DIR / "super.img"
     repack_super_image(EXTRACTED_STOCK_DIR, EXTRACTED_PORT_DIR, super_output)
+
+    # Step 7: Assemble the final flashable package (template + META-INF + super chunks)
+    assemble_package(super_output, PORT_META_DIR)
 
     print("HyperOS AutoPorter completed successfully!")
 
