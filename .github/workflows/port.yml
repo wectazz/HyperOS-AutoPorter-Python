@@ -37,6 +37,14 @@ on:
         options:
           - "yes"
           - "no"
+      decrypt_data:
+        description: 'Decrypt /data (fileencryption -> fileencryptable in fstab)'
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - "yes"
+          - "no"
 
 jobs:
   build:
@@ -78,7 +86,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }}
+          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }}
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4

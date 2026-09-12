@@ -351,8 +351,50 @@ DEBLOAT_COMMON_FILES = ["mi_ext/etc/init/init.miui.mi_ext.rc"]
 # (duchamp), hence not versioned.
 STOCK_DEBLOAT = [
     "vendor/etc/voicecommand",
-    "vendor/etc/thermal",
 ]
+
+# fstab option substrings stripped from vendor/etc/fstab.* lines (AVB disable).
+# Order matters: longest/most specific first (bare "avb," must not eat prefixes).
+FSTAB_STRIP_OPTIONS = [
+    "avb=vbmeta_system,",
+    "avb=vbmeta,",
+    "avb,",
+    ",avb_keys=/avb/q-gsi.avbpubkey:/avb/r-gsi.avbpubkey:/avb/s-gsi.avbpubkey",
+    "fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized,keydirectory=/metadata/vold/metadata_encryption,",
+]
+
+
+def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
+    """Patch vendor/etc/fstab.* in the unpacked stock tree, porting the DNA
+    rw/decrypt plugin methods: strip AVB options, drop overlay lines (rw),
+    and with decrypt_data also rename fileencryption -> fileencryptable
+    (decrypted /data). AVB strips run before the rename, otherwise the renamed
+    option would no longer match."""
+    fstabs = sorted((stock_root / "vendor" / "etc").glob("fstab.*"))
+    if not fstabs:
+        print("  [warn] no vendor/etc/fstab.* found, skip fstab patching\n")
+        return
+    print(f"=== Patching {len(fstabs)} vendor fstab file(s), decrypt_data={decrypt_data} ===")
+    for fst in fstabs:
+        stripped, overlays, encrypts = 0, 0, 0
+        out: List[str] = []
+        for line in fst.read_text().splitlines(keepends=True):
+            if "overlay" in line:
+                overlays += 1
+                continue
+            new = line
+            for opt in FSTAB_STRIP_OPTIONS:
+                if opt in new:
+                    new = new.replace(opt, "")
+                    stripped += 1
+            if decrypt_data and "fileencryption" in new:
+                new = new.replace("fileencryption", "fileencryptable")
+                encrypts += 1
+            out.append(new)
+        fst.write_text("".join(out))
+        print(f"  {fst.name}: stripped {stripped} option(s), dropped {overlays} "
+              f"overlay line(s), fileencryptable x{encrypts}")
+    print()
 
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
 SUPER_SPLIT_PARTS = 54
@@ -1525,9 +1567,17 @@ def main() -> None:
         help="Apply DSV smali patching - signature checks disabling "
              "(framework, miui-services, services jars) (default: yes)",
     )
+    parser.add_argument(
+        "--decrypt-data",
+        choices=["yes", "no"],
+        default="no",
+        help="Rename fileencryption -> fileencryptable in vendor fstab "
+             "(decrypted /data, format data after flash) (default: no)",
+    )
     args = parser.parse_args()
     print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version}, "
-          f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv})...\n")
+          f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
+          f"decrypt-data: {args.decrypt_data})...\n")
 
     # Step 1: Tools Setup
     setup_tools()
@@ -1557,13 +1607,16 @@ def main() -> None:
     # rebuild bake the trees into images)
     apply_donor_files(UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR)
 
-    # Step 4d: Debloat the unpacked trees (before the rebuild bakes them in)
+    # Step 4d: Debloat the unpacked trees + patch vendor fstab (AVB off, rw).
+    # Fstab patching is not debloat-gated (functional, not deletions); only the
+    # fileencryption rename follows --decrypt-data. Runs before the rebuild.
     debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
     if debloat_version == "none":
         print("Debloat skipped (--debloat none).\n")
     else:
         apply_debloat(UNPACKED_PORT_DIR, debloat_version)
         apply_stock_debloat(UNPACKED_STOCK_DIR)
+    patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
 
     # Steps 4e-4g: DSV smali patching (signature checks disabling).
     if args.dsv == "yes":
