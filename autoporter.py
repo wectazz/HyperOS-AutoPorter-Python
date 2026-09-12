@@ -5,6 +5,7 @@ HyperOS AutoPorter - Automated Firmware Porting Tool
 
 import argparse
 import os
+import struct
 import sys
 import shutil
 import zipfile
@@ -268,6 +269,14 @@ def process_firmware(
 _SPARSE_MAGIC = b"\x3a\xff\x26\xed"  # Android sparse, offset 0
 _EROFS_MAGIC = b"\xe2\xe1\xf5\xe0"  # EROFS, offset 1024
 _EXT4_MAGIC = b"\x53\xef"  # ext2/3/4, offset 1080
+
+# Android sparse image format fields, as emitted per chunk by split_file()
+# (UKA/img2simg method: header + DONT_CARE offset + RAW data)
+_SPARSE_HDR_MAGIC = 0xED26FF3A
+_SPARSE_HDR_LEN = 28
+_SPARSE_CHUNK_HDR_LEN = 12
+_SPARSE_CHUNK_RAW = 0xCAC1
+_SPARSE_CHUNK_DONT_CARE = 0xCAC3
 
 
 def detect_image_format(img_path: Path) -> str:
@@ -539,27 +548,58 @@ def repack_super_image(
 
 
 def split_file(src_path: Path, dest_dir: Path, parts: int, prefix: str) -> None:
-    """Split a file into exactly `parts` chunks named <prefix>0 .. <prefix>{parts-1}.
+    """Split a file into exactly `parts` Android sparse chunks (UKA/img2simg method).
 
-    Chunk size is ceil(total / parts), so the last chunk is smaller (never empty
-    for real firmware sizes). Streams with a fixed buffer — safe for multi-GB files.
+    Each chunk is a valid sparse image: sparse header + one DONT_CARE chunk
+    (offset where this part belongs) + one RAW chunk with the data. That way
+    `fastboot flash super` writes every part at its own offset and recovery
+    `package_unsparse_file` handles them (plain raw slices would all land at
+    offset 0). Chunk size is floor(total / parts) rounded down to 4K and the
+    last part takes the remainder, so the split always yields exactly `parts`
+    non-empty chunks. Output names are <prefix>0 .. <prefix>{parts-1}
+    (0-based, as the install scripts and updater-script expect).
     """
+    block_size = 4096
     total = src_path.stat().st_size
-    chunk_size = (total + parts - 1) // parts
+    if total % block_size != 0:
+        raise ValueError(f"{src_path.name} size {total} is not a multiple of {block_size}")
+    chunk_size = (total // parts // block_size) * block_size
+    if chunk_size < block_size:
+        raise ValueError(f"{src_path.name} too small to split into {parts} parts")
+
     dest_dir.mkdir(parents=True, exist_ok=True)
+    offset_blocks = 0
     with open(src_path, "rb") as f:
         for i in range(parts):
-            remaining = total - f.tell()
-            to_write = min(chunk_size, remaining) if remaining > 0 else 0
+            # Last part takes everything left, so the split is always exactly
+            # `parts` non-empty chunks ((parts-1)*chunk_size < total holds).
+            data = f.read() if i == parts - 1 else f.read(chunk_size)
+            if not data:
+                raise RuntimeError(f"Ran out of data at part {i}, expected exactly {parts}")
+            to_write = len(data)
+            if to_write % block_size != 0:
+                raise ValueError(f"Chunk {i} size {to_write} is not a multiple of {block_size}")
+            raw_blocks = to_write // block_size
+            header = struct.pack(
+                "<IHHHHIIII",
+                _SPARSE_HDR_MAGIC, 1, 0,
+                _SPARSE_HDR_LEN, _SPARSE_CHUNK_HDR_LEN, block_size,
+                offset_blocks + raw_blocks, 2, 0,
+            )
+            dont_care = struct.pack(
+                "<HHII", _SPARSE_CHUNK_DONT_CARE, 0, offset_blocks, _SPARSE_CHUNK_HDR_LEN,
+            )
+            raw = struct.pack(
+                "<HHII", _SPARSE_CHUNK_RAW, 0, raw_blocks, _SPARSE_CHUNK_HDR_LEN + to_write,
+            )
             with open(dest_dir / f"{prefix}{i}", "wb") as out:
-                left = to_write
-                while left > 0:
-                    buf = f.read(min(8 * 1024 * 1024, left))
-                    if not buf:
-                        break
-                    out.write(buf)
-                    left -= len(buf)
-    print(f"Split {src_path.name} ({total} bytes) into {parts} parts in {dest_dir}.")
+                out.write(header)
+                out.write(dont_care)
+                out.write(raw)
+                out.write(data)
+            offset_blocks += raw_blocks
+    print(f"Split {src_path.name} ({total} bytes) into {parts} sparse parts "
+          f"(~{chunk_size // 1024 // 1024}MB each) in {dest_dir}.")
 
 
 def assemble_package(
