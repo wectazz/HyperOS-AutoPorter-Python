@@ -18,6 +18,7 @@ unpacked_stock/
 unpacked_port/
 package/
 port_meta/
+smali_work/
 
 # local SDK bundle (878MB, too big for git, not part of the build)
 otatools/

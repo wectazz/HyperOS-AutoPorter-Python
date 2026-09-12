@@ -5,6 +5,7 @@ HyperOS AutoPorter - Automated Firmware Porting Tool
 
 import argparse
 import os
+import re
 import struct
 import sys
 import shutil
@@ -62,6 +63,35 @@ STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 # Extra files taken from the port OTA zip (before it is deleted) for the
 # final flashable package: recovery META-INF descriptor of the port build
 PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metadata.pb"]
+
+# Smali patching (signature-check neutering -> XdConfig). Applied to jars from
+# the unpacked port tree BEFORE the rebuild bakes them back in. Extra smali to
+# inject lives in dsv/<jar-key>/<dex>/ and lands in the matching decompiled dex
+# dir at the path from its own .class declaration (e.g. XdConfig goes to
+# android/os/ of classes6). Extend per jar (miui-services.jar, services.jar).
+DSV_DIR = BASE_DIR / "dsv"
+
+# Method-body replacements: (target basenames, [method name + '('], registers,
+# XdConfig method). The whole body between the .method header and .end method
+# is replaced (annotations inside are dropped with it).
+FRAMEWORK_METHOD_PATCHES = [
+    (["AssetManager.smali"], ["containsAllocatedTable("], 2, "RETURN_FALSE"),
+    (["PackageParser$SigningDetails.smali", "SigningDetails.smali"],
+     ["checkCapability(", "checkCapabilityRecover(", "hasCommonAncestor(",
+      "signaturesMatchExactly("], 4, "RETURN_TRUE"),
+    (["StrictJarVerifier.smali"], ["verifyMessageDigest("], 3, "RETURN_TRUE"),
+]
+# Invoke insertions: (target basenames, invoke-line regex). An
+# `XdConfig;->RETURN_TRUE()Z` call is inserted after EVERY matching line (with
+# no move-result, so the following original move-result picks up our forced
+# true — that is the point).
+FRAMEWORK_INSERT_PATCHES = [
+    (["ApkSignatureSchemeV2Verifier.smali", "ApkSignatureSchemeV3Verifier.smali",
+      "ApkSignatureSchemeV4Verifier.smali"],
+     r"invoke-virtual\s+\{[^}]*\},\s*Ljava/security/Signature;->verify\(\[B\)Z"),
+    (["ApkSigningBlockUtils.smali"],
+     r"invoke-static\s+\{[^}]*\},\s*Ljava/security/MessageDigest;->isEqual\(\[B\[B\)Z"),
+]
 
 # Donor blobs copied from the unpacked STOCK trees into the unpacked PORT trees
 # before the rebuild (hardware blobs the port build lacks). Paths are relative
@@ -631,6 +661,244 @@ def apply_debloat(unpacked_root: Path, version: str) -> None:
     print(f"Debloat done: removed {removed}, missing {missing}.\n")
 
 
+def run_logged(cmd: List[str], what: str) -> None:
+    """Run a chatty tool; show output only on failure."""
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        print(f"{what} failed (exit {proc.returncode}). Last log lines:")
+        print("\n".join(proc.stdout.splitlines()[-30:]))
+        raise subprocess.CalledProcessError(proc.returncode, proc.args)
+
+
+def replace_method_bodies(text: str, names: List[str], registers: int, call: str) -> tuple:
+    """Replace bodies of .method blocks whose header contains one of `names`
+    (each name includes the opening paren, e.g. "checkCapability("). Returns
+    (new_text, patched_headers). Raises on an unterminated block."""
+    body = (f"    .registers {registers}\n"
+            f"    invoke-static {{}}, Landroid/os/XdConfig;->{call}()Z\n"
+            f"    move-result v0\n"
+            f"    return v0\n")
+    out: List[str] = []
+    patched: List[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not skipping:
+            out.append(line)
+            if stripped.startswith(".method") and any(
+                    re.search(r"(?<![\w$])" + re.escape(n), stripped) for n in names):
+                patched.append(stripped)
+                out.append(body)
+                skipping = True
+        elif stripped == ".end method":
+            out.append(line)
+            skipping = False
+        # else: drop old body line
+    if skipping:
+        raise RuntimeError("Unterminated .method block while patching")
+    return "".join(out), patched
+
+
+def insert_after_invokes(text: str, pattern: str) -> tuple:
+    """Insert an XdConfig RETURN_TRUE call after every line matching `pattern`
+    (same indent). Returns (new_text, match_count)."""
+    rx = re.compile(pattern)
+    insert = "invoke-static {}, Landroid/os/XdConfig;->RETURN_TRUE()Z"
+    out: List[str] = []
+    count = 0
+    for line in text.splitlines(keepends=True):
+        out.append(line)
+        if rx.search(line):
+            indent = line[:len(line) - len(line.lstrip())]
+            out.append(f"{indent}{insert}\n")
+            count += 1
+    return "".join(out), count
+
+
+def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> None:
+    """Copy dsv/<key>/<dex>/*.smali into the matching decompiled dex dir, at the
+    path from each file's own .class declaration. Classes already present in
+    any dex dir are skipped (with a warning) to avoid duplicates."""
+    src_root = DSV_DIR / dsv_key
+    if not src_root.is_dir():
+        print(f"  [dsv] no {src_root} dir, skip injection")
+        return
+    existing = set()
+    for d in dex_out_dirs.values():
+        existing.update(p.name for p in d.rglob("*.smali"))
+    for src in sorted(src_root.rglob("*.smali")):
+        dex = src.relative_to(src_root).parts[0]
+        target_root = dex_out_dirs.get(dex)
+        if target_root is None:
+            target_root = dex_out_dirs.get("classes6") or list(dex_out_dirs.values())[-1]
+            print(f"  [dsv] {dex}/ not in jar, injecting {src.name} into {target_root.name}/ instead")
+        cls = None
+        for raw in src.read_text().splitlines():
+            s = raw.strip()
+            if s.startswith(".class"):
+                m = re.search(r"(L[^;]+;)", s)
+                if m:
+                    cls = m.group(1)[1:-1] + ".smali"
+                break
+        if cls is None:
+            raise RuntimeError(f"Cannot find .class declaration in {src}")
+        if Path(cls).name in existing:
+            print(f"  [dsv] {cls} already decompiled, skip {src}")
+            continue
+        dest = target_root / cls
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        existing.add(Path(cls).name)
+        print(f"  [dsv] injected {cls} into {target_root.name}/")
+
+
+# dex version -> smali/baksmali api level, chosen so a reassembled dex keeps
+# its original version (verified locally per api flag). NOTE:
+# tools/baksmali.jar + tools/smali.jar only roundtrip dex <= 040
+# (Android <= 14) — verified locally: 041 output cannot be re-read by this
+# baksmali, 042+ comes out with a zeroed header. Newer dex versions fail fast
+# in detect_dex_api() instead of silently producing garbage (both tools exit 0
+# even on failure, so outputs are verified, not return codes).
+DEX_VERSION_API = {"035": 21, "037": 24, "038": 26, "039": 29, "040": 34}
+
+
+def detect_dex_api(dex_path: Path) -> int:
+    """Read the dex version from the header and map it to a smali --api level."""
+    with open(dex_path, "rb") as f:
+        magic = f.read(8)
+    if len(magic) != 8 or not magic.startswith(b"dex\n") or magic[7:8] != b"\x00":
+        raise RuntimeError(f"{dex_path} is not a dex file (bad magic)")
+    version = magic[4:7].decode("ascii")
+    if version not in DEX_VERSION_API:
+        raise RuntimeError(
+            f"{dex_path} has dex version {version}, but tools/baksmali.jar + "
+            f"tools/smali.jar only support up to 040 — provide newer jars with "
+            f"041+ support")
+    return DEX_VERSION_API[version]
+
+
+def check_dex_blob(path: Path, what: str) -> None:
+    """Fail fast on empty/corrupt assembled dex (smali exits 0 even on failure)."""
+    if not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f"{what} produced no output: {path}")
+    with open(path, "rb") as f:
+        magic = f.read(8)
+    if not magic.startswith(b"dex\n"):
+        raise RuntimeError(f"{what} produced a corrupt dex (bad magic): {path}")
+
+
+def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches,
+                    work_root: Path) -> None:
+    """Decompile jar's classes*.dex with baksmali, inject dsv smali, apply the
+    regex patches, reassemble with smali and replace the jar atomically."""
+    if not jar_path.is_file():
+        print(f"WARNING: {jar_path} not found, skip smali patching.\n")
+        return
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError("java not found: install a JRE for baksmali/smali (CI: default-jre-headless)")
+    baksmali_jar = TOOLS_DIR / "baksmali.jar"
+    smali_jar = TOOLS_DIR / "smali.jar"
+    for jar in (baksmali_jar, smali_jar):
+        if not jar.is_file():
+            raise RuntimeError(f"Missing tool jar: {jar}")
+    print(f"=== Smali-patching {jar_path.name} ===")
+
+    def dex_sort_key(name: str) -> int:
+        m = re.fullmatch(r"classes(\d*)\.dex", name)
+        return int(m.group(1)) if m and m.group(1) else 1
+
+    with zipfile.ZipFile(jar_path) as zin:
+        infos = zin.infolist()
+        blobs = {i.filename: zin.read(i.filename) for i in infos}
+    dex_names = sorted([n for n in blobs if re.fullmatch(r"classes(\d*)\.dex", n)],
+                       key=dex_sort_key)
+    if not dex_names:
+        raise RuntimeError(f"No classes*.dex found in {jar_path}")
+    print(f"  dex files: {', '.join(dex_names)}")
+
+    if work_root.exists():
+        shutil.rmtree(work_root)
+    dex_dir = work_root / "dex"
+    out_root = work_root / "out"
+    new_dir = work_root / "new"
+    for d in (dex_dir, out_root, new_dir):
+        d.mkdir(parents=True)
+    try:
+        for dex in dex_names:
+            (dex_dir / dex).write_bytes(blobs[dex])
+        # 1. decompile each dex (explicit --api: default 15 is too low for
+        # hiddenapi markers and new opcodes)
+        dex_out_dirs = {}
+        dex_apis = {}
+        for dex in dex_names:
+            base = dex[:-len(".dex")]
+            api = detect_dex_api(dex_dir / dex)
+            dex_apis[dex] = api
+            out_d = out_root / base
+            run_logged([java, "-jar", str(baksmali_jar), "d", "--api", str(api),
+                        str(dex_dir / dex), "-o", str(out_d)], f"baksmali {dex}")
+            if not any(out_d.rglob("*.smali")):
+                raise RuntimeError(f"baksmali produced no smali for {dex} "
+                                   f"(it exits 0 even on failure)")
+            dex_out_dirs[base] = out_d
+        # 2. inject dsv smali (e.g. XdConfig into classes6/android/os/)
+        inject_dsv_smali(dsv_key, dex_out_dirs)
+        # 3a. method-body replacements
+        for basenames, names, regs, call in method_patches:
+            for base_name in basenames:
+                found = [p for d in dex_out_dirs.values() for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    new_text, patched = replace_method_bodies(
+                        path.read_text(), names, regs, call)
+                    if not patched:
+                        print(f"  [warn] no target method in {path.relative_to(out_root)}")
+                        continue
+                    path.write_text(new_text)
+                    for header in patched:
+                        print(f"  patched {path.name}: {header}")
+        # 3b. invoke insertions
+        for basenames, pattern in insert_patches:
+            for base_name in basenames:
+                found = [p for d in dex_out_dirs.values() for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    new_text, count = insert_after_invokes(path.read_text(), pattern)
+                    if not count:
+                        print(f"  [warn] no target invoke in {path.relative_to(out_root)}")
+                        continue
+                    path.write_text(new_text)
+                    print(f"  patched {path.name}: +{count} XdConfig insert(s)")
+        # 4. reassemble each dex (same --api it was decompiled with)
+        new_blobs = {}
+        for dex in dex_names:
+            base = dex[:-len(".dex")]
+            out_dex = new_dir / dex
+            run_logged([java, "-jar", str(smali_jar), "a", "--api",
+                        str(dex_apis[dex]), str(out_root / base),
+                        "-o", str(out_dex)], f"smali {base}")
+            check_dex_blob(out_dex, f"smali {base}")
+            new_blobs[dex] = out_dex.read_bytes()
+        # 5. rezip, preserving every other entry byte-identical
+        tmp = jar_path.with_name(jar_path.name + ".new")
+        with zipfile.ZipFile(tmp, "w") as zout:
+            for info in infos:
+                zi = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+                zi.compress_type = info.compress_type
+                zi.external_attr = info.external_attr
+                zi.create_system = info.create_system
+                zout.writestr(zi, new_blobs.get(info.filename, blobs[info.filename]))
+        os.replace(tmp, jar_path)
+        print(f"Smali patching done: {jar_path.name} ({jar_path.stat().st_size} bytes).\n")
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
+
+
 def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
     """Rebuild a partition .img from an unpacked tree, matching the original format.
 
@@ -999,6 +1267,14 @@ def main() -> None:
         print("Debloat skipped (--debloat none).\n")
     else:
         apply_debloat(UNPACKED_PORT_DIR, debloat_version)
+
+    # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig).
+    # Extend with (miui-services.jar, services.jar) calls when their rules land.
+    patch_jar_smali(
+        UNPACKED_PORT_DIR / "system" / "system" / "framework" / "framework.jar",
+        "framework", FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
+        BASE_DIR / "smali_work" / "framework",
+    )
 
     # Step 5: Rebuild partition images from (patched) unpacked trees.
     # NOTE: stock product/system_ext are donors only (files are copied out of
