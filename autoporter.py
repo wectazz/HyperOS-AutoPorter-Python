@@ -88,6 +88,24 @@ MIUI_SERVICES_METHOD_PATCHES = [
     (["PackageManagerServiceImpl.smali"], ["verifyIsolationViolation("], 3, None),
     (["PackageManagerServiceImpl.smali"], ["canBeUpdate("], 2, None),
 ]
+# Method-start insertions: (target basenames, header fragments, insert lines,
+# required body markers). The block is inserted after the method prologue
+# (.registers/.params/annotations) and before the first instruction, under a
+# unique :bypass_secure_flag label (never :cond_N — those collide with
+# baksmali's own labels). Matched by descriptor + markers, not by method name.
+MIUI_SERVICES_START_PATCHES = [
+    (["WindowManagerServiceImpl.smali"],
+     ["(Lcom/android/server/wm/RootWindowContainer;I)Z"],
+     [
+         "invoke-static {}, Lcom/android/server/wm/WindowState;->isBypassSecureFlag()Z",
+         "move-result v0",
+         "if-eqz v0, :bypass_secure_flag",
+         "const/4 v0, 0x0",
+         "return v0",
+         ":bypass_secure_flag",
+     ],
+     ["ActivityRecordStub;->isCompatibilityMode"]),
+]
 SERVICES_METHOD_PATCHES = [
     (["KeySetManagerService.smali"], ["checkUpgradeKeySetLocked("], "keep", "RETURN_TRUE"),
     (["PackageManagerServiceUtils.smali"], ["checkDowngrade("], "keep", None),
@@ -737,6 +755,66 @@ def replace_method_bodies(text: str, names: List[str], registers, call) -> tuple
     return "".join(out), patched
 
 
+def insert_at_method_start(text: str, header_frags: List[str], insert_lines: List[str],
+                           require_markers=()) -> tuple:
+    """Insert lines after the prologue of .method blocks whose header contains
+    all `header_frags` and whose body contains all `require_markers`. The
+    prologue (blank lines + dot-directives like .registers/.params/.annotation
+    blocks) is preserved; insertion lands before the first instruction/label.
+    Empty methods are left alone with a warning. Returns (new_text, [headers])."""
+    lines = text.splitlines(keepends=True)
+    out: List[str] = []
+    patched: List[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if not (stripped.startswith(".method")
+                and all(f in stripped for f in header_frags)):
+            out.append(line)
+            i += 1
+            continue
+        # collect the whole block to check markers
+        j = i + 1
+        while j < n and lines[j].strip() != ".end method":
+            j += 1
+        if j >= n:
+            raise RuntimeError("Unterminated .method block while patching")
+        if not all(m in "".join(lines[i:j + 1]) for m in require_markers):
+            out.extend(lines[i:j + 1])
+            i = j + 1
+            continue
+        patched.append(stripped)
+        out.append(line)  # header
+        k = i + 1
+        depth = 0
+        empty = False
+        while k <= j:
+            ks = lines[k].strip()
+            if ks == ".end method":
+                empty = True
+                break
+            if ks.startswith(".annotation"):
+                depth += 1
+            if depth == 0 and ks != "" and not ks.startswith(".") and not ks.startswith(":"):
+                break  # first real instruction/label
+            if ks.startswith(".end annotation"):
+                depth -= 1
+            out.append(lines[k])
+            k += 1
+        if empty:
+            print(f"  [warn] empty method, skip insert: {stripped}")
+            out.append(lines[k])  # .end method
+        else:
+            for ins in insert_lines:
+                out.append(f"    {ins}\n")
+            while k <= j:
+                out.append(lines[k])
+                k += 1
+        i = j + 1
+    return "".join(out), patched
+
+
 def insert_after_invokes(text: str, pattern: str) -> tuple:
     """Insert an XdConfig RETURN_TRUE call after every line matching `pattern`
     (same indent). Returns (new_text, match_count)."""
@@ -844,7 +922,7 @@ def check_dex_blob(path: Path, what: str) -> None:
 
 
 def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches,
-                    work_root: Path) -> None:
+                    work_root: Path, start_patches=None) -> None:
     """Decompile jar's classes*.dex with baksmali, inject dsv smali, apply the
     regex patches, reassemble with smali and replace the jar atomically."""
     if not jar_path.is_file():
@@ -936,6 +1014,22 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                         continue
                     path.write_text(new_text)
                     print(f"  patched {path.name}: +{count} XdConfig insert(s)")
+        # 3c. method-start insertions (secure-flag bypass style)
+        for basenames, header_frags, insert_lines, markers in (start_patches or []):
+            for base_name in basenames:
+                found = [p for d in dex_out_dirs.values() for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    new_text, patched = insert_at_method_start(
+                        path.read_text(), header_frags, insert_lines, markers)
+                    if not patched:
+                        print(f"  [warn] no target method in {path.relative_to(out_root)}")
+                        continue
+                    path.write_text(new_text)
+                    for header in patched:
+                        print(f"  patched {path.name}: {header}")
         # 4. reassemble each dex (same --api it was decompiled with)
         new_blobs = {}
         for dex in dex_names:
@@ -1351,11 +1445,13 @@ def main() -> None:
             "framework", FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
             BASE_DIR / "smali_work" / "framework",
         )
-        # Step 4f: Smali-patch miui-services.jar (signature checks -> void).
+        # Step 4f: Smali-patch miui-services.jar (signature checks -> void,
+        # secure-flag bypass at method start).
         patch_jar_smali(
             UNPACKED_PORT_DIR / "system_ext" / "framework" / "miui-services.jar",
             "miui-services", MIUI_SERVICES_METHOD_PATCHES, [],
             BASE_DIR / "smali_work" / "miui-services",
+            start_patches=MIUI_SERVICES_START_PATCHES,
         )
         # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void).
         patch_jar_smali(
