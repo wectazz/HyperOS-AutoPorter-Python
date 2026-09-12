@@ -715,14 +715,16 @@ def insert_after_invokes(text: str, pattern: str) -> tuple:
     return "".join(out), count
 
 
-def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> None:
+def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> dict:
     """Copy dsv/<key>/<dex>/*.smali into the matching decompiled dex dir, at the
     path from each file's own .class declaration. Classes already present in
-    any dex dir are skipped (with a warning) to avoid duplicates."""
+    any dex dir are skipped (with a warning) to avoid duplicates. Returns
+    {dex base: injected class count} for the post-rebuild check."""
     src_root = DSV_DIR / dsv_key
+    injected: dict = {}
     if not src_root.is_dir():
         print(f"  [dsv] no {src_root} dir, skip injection")
-        return
+        return injected
     existing = set()
     for d in dex_out_dirs.values():
         existing.update(p.name for p in d.rglob("*.smali"))
@@ -749,17 +751,20 @@ def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
         existing.add(Path(cls).name)
-        print(f"  [dsv] injected {cls} into {target_root.name}/")
+        base = next(b for b, d in dex_out_dirs.items() if d == target_root)
+        injected[base] = injected.get(base, 0) + 1
+        print(f"  [dsv] injected {cls} into {base}/")
+    return injected
 
 
 # dex version -> smali/baksmali api level, chosen so a reassembled dex keeps
-# its original version (verified locally per api flag). NOTE:
-# tools/baksmali.jar + tools/smali.jar only roundtrip dex <= 040
-# (Android <= 14) — verified locally: 041 output cannot be re-read by this
-# baksmali, 042+ comes out with a zeroed header. Newer dex versions fail fast
-# in detect_dex_api() instead of silently producing garbage (both tools exit 0
-# even on failure, so outputs are verified, not return codes).
-DEX_VERSION_API = {"035": 21, "037": 24, "038": 26, "039": 29, "040": 34}
+# its original version (verified locally per api flag). NOTE: tools jars are
+# v3.0.10 (latest). dex 041 support was officially added in 3.0.4, but 042+
+# has no valid --api here (36+ writes a zeroed header — verified locally), so
+# 042+ fails fast in detect_dex_api(). Every decompiled/reassembled dex is
+# additionally verified (magic + class count), because both tools exit 0 even
+# on failure — return codes prove nothing.
+DEX_VERSION_API = {"035": 21, "037": 24, "038": 26, "039": 29, "040": 34, "041": 35}
 
 
 def detect_dex_api(dex_path: Path) -> int:
@@ -772,9 +777,22 @@ def detect_dex_api(dex_path: Path) -> int:
     if version not in DEX_VERSION_API:
         raise RuntimeError(
             f"{dex_path} has dex version {version}, but tools/baksmali.jar + "
-            f"tools/smali.jar only support up to 040 — provide newer jars with "
-            f"041+ support")
+            f"tools/smali.jar only support up to 041 — provide newer jars")
     return DEX_VERSION_API[version]
+
+
+def count_dex_classes(java: str, baksmali_jar: Path, dex_path: Path, api: int) -> int:
+    """Count classes in a dex via `baksmali list classes` (also proves it parses)."""
+    proc = subprocess.run([java, "-jar", str(baksmali_jar), "list", "classes",
+                           "--api", str(api), str(dex_path)],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    count = sum(1 for line in proc.stdout.splitlines()
+                if line.strip().startswith("L") and line.strip().endswith(";"))
+    if count == 0:
+        print(f"baksmali list classes on {dex_path.name} yielded no classes. Output:")
+        print("\n".join(proc.stdout.splitlines()[-15:]))
+        raise RuntimeError(f"{dex_path} has no readable classes")
+    return count
 
 
 def check_dex_blob(path: Path, what: str) -> None:
@@ -827,23 +845,29 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
     try:
         for dex in dex_names:
             (dex_dir / dex).write_bytes(blobs[dex])
+        # 0. intake gate: every dex must parse (proves readability before we
+        # touch anything); record class counts for the post-rebuild check
+        dex_apis = {}
+        dex_classes = {}
+        for dex in dex_names:
+            api = detect_dex_api(dex_dir / dex)
+            dex_apis[dex] = api
+            dex_classes[dex] = count_dex_classes(java, baksmali_jar, dex_dir / dex, api)
+            print(f"  {dex}: dex api {api}, {dex_classes[dex]} classes")
         # 1. decompile each dex (explicit --api: default 15 is too low for
         # hiddenapi markers and new opcodes)
         dex_out_dirs = {}
-        dex_apis = {}
         for dex in dex_names:
             base = dex[:-len(".dex")]
-            api = detect_dex_api(dex_dir / dex)
-            dex_apis[dex] = api
             out_d = out_root / base
-            run_logged([java, "-jar", str(baksmali_jar), "d", "--api", str(api),
+            run_logged([java, "-jar", str(baksmali_jar), "d", "--api", str(dex_apis[dex]),
                         str(dex_dir / dex), "-o", str(out_d)], f"baksmali {dex}")
             if not any(out_d.rglob("*.smali")):
                 raise RuntimeError(f"baksmali produced no smali for {dex} "
                                    f"(it exits 0 even on failure)")
             dex_out_dirs[base] = out_d
         # 2. inject dsv smali (e.g. XdConfig into classes6/android/os/)
-        inject_dsv_smali(dsv_key, dex_out_dirs)
+        injected = inject_dsv_smali(dsv_key, dex_out_dirs)
         # 3a. method-body replacements
         for basenames, names, regs, call in method_patches:
             for base_name in basenames:
@@ -883,6 +907,12 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                         str(dex_apis[dex]), str(out_root / base),
                         "-o", str(out_dex)], f"smali {base}")
             check_dex_blob(out_dex, f"smali {base}")
+            after = count_dex_classes(java, baksmali_jar, out_dex, dex_apis[dex])
+            want = dex_classes[dex] + injected.get(base, 0)
+            if after != want:
+                raise RuntimeError(
+                    f"smali {base}: class count changed {dex_classes[dex]} -> {after} "
+                    f"(expected {want}), refusing to pack a damaged dex")
             new_blobs[dex] = out_dex.read_bytes()
         # 5. rezip, preserving every other entry byte-identical
         tmp = jar_path.with_name(jar_path.name + ".new")
