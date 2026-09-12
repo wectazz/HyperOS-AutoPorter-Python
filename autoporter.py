@@ -351,6 +351,7 @@ DEBLOAT_COMMON_FILES = ["mi_ext/etc/init/init.miui.mi_ext.rc"]
 # (duchamp), hence not versioned.
 STOCK_DEBLOAT = [
     "vendor/etc/voicecommand",
+    "vendor/etc/thermal",
 ]
 
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
@@ -361,7 +362,7 @@ SUPER_SPLIT_PARTS = 54
 # builds take much longer — "lz4hc,12" is the fast safe fallback (decodes via
 # the plain LZ4 path everywhere lz4 works). Do NOT switch to deflate: it needs
 # 6.6+ — unreadable images = bootloop.
-EROFS_COMPRESSOR = "lz4hc,12"
+EROFS_COMPRESSOR = "lz4hc,10"
 
 
 def make_executable(path: Path) -> None:
