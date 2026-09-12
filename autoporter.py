@@ -63,6 +63,28 @@ STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 # final flashable package: recovery META-INF descriptor of the port build
 PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metadata.pb"]
 
+# Donor blobs copied from the unpacked STOCK trees into the unpacked PORT trees
+# before the rebuild (hardware blobs the port build lacks). Paths are relative
+# to UNPACKED_STOCK_DIR / UNPACKED_PORT_DIR. Missing sources only warn.
+# Single files: (stock path, port path). duchamp.xml is per-device — extend the
+# list when other devices get supported.
+DONOR_FILES = [
+    ("product/etc/device_features/duchamp.xml", "product/etc/duchamp.xml"),
+]
+# Whole directories merged recursively (all files).
+DONOR_DIRS = [
+    ("product/etc/displayconfig", "product/etc/displayconfig"),
+]
+# Named files from one dir to another: (stock dir, port dir, [names]).
+DONOR_DIR_FILES = [
+    ("system_ext/apex", "system_ext/apex", [
+        "com.android.compos.apex",
+        "com.android.vndk.v31.apex",
+        "com.android.vndk.v33.apex",
+        "com.android.vndk.v34.apex",
+    ]),
+]
+
 # Debloat lists per HyperOS version: paths RELATIVE TO the unpacked port tree
 # (UNPACKED_PORT_DIR) deleted before the rebuild. NOTE: not extracted_port —
 # that dir holds .img files; only the unpacked trees affect the rebuild.
@@ -551,6 +573,43 @@ def flatten_pangu_system(product_dir: Path) -> None:
     print("Flattening done.\n")
 
 
+def apply_donor_files(stock_root: Path, port_root: Path) -> None:
+    """Copy donor blobs from the unpacked stock trees into the unpacked port
+    trees (device_features, displayconfig, vndk/compos APEXes). Missing
+    sources only warn — OTAs differ between builds."""
+    print("=== Copying donor files (stock -> port) ===")
+    copied, missing = 0, 0
+    for src_rel, dst_rel in DONOR_FILES:
+        src, dst = stock_root / src_rel, port_root / dst_rel
+        if not src.is_file():
+            print(f"  [missing, skip] {src_rel}")
+            missing += 1
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        copied += 1
+    for src_rel, dst_rel in DONOR_DIRS:
+        src, dst = stock_root / src_rel, port_root / dst_rel
+        if not src.is_dir():
+            print(f"  [missing, skip] {src_rel}/")
+            missing += 1
+            continue
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+        copied += 1
+    for src_dir_rel, dst_dir_rel, names in DONOR_DIR_FILES:
+        for name in names:
+            src = stock_root / src_dir_rel / name
+            dst = port_root / dst_dir_rel / name
+            if not src.is_file():
+                print(f"  [missing, skip] {src_dir_rel}/{name}")
+                missing += 1
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied += 1
+    print(f"Donor files done: copied {copied}, missing {missing}.\n")
+
+
 def apply_debloat(unpacked_root: Path, version: str) -> None:
     """Delete the debloat list entries for a HyperOS version from the unpacked
     port tree (plus the init.miui.mi_ext.rc file, removed for every version).
@@ -930,7 +989,11 @@ def main() -> None:
     # debloat paths and the rebuild see the final flat layout.
     flatten_pangu_system(UNPACKED_PORT_DIR / "product")
 
-    # Step 4c: Debloat the unpacked port tree (before the rebuild bakes it in)
+    # Step 4c: Copy stock donor blobs into the port tree (before debloat and
+    # rebuild bake the trees into images)
+    apply_donor_files(UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR)
+
+    # Step 4d: Debloat the unpacked port tree (before the rebuild bakes it in)
     debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
     if debloat_version == "none":
         print("Debloat skipped (--debloat none).\n")
