@@ -19,6 +19,16 @@ on:
         options:
           - universal
           - fastboot-only
+      debloat:
+        description: 'Debloat list (auto = match hyper_version)'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - hos3
+          - hos4
+          - none
 
 jobs:
   build:
@@ -60,7 +70,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }}
+          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }}
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4

@@ -63,6 +63,75 @@ STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 # final flashable package: recovery META-INF descriptor of the port build
 PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metadata.pb"]
 
+# Debloat lists per HyperOS version: paths RELATIVE TO the unpacked port tree
+# (UNPACKED_PORT_DIR) deleted before the rebuild. NOTE: not extracted_port —
+# that dir holds .img files; only the unpacked trees affect the rebuild.
+# All entries below are directories, except init.miui.mi_ext.rc (a file).
+DEBLOAT_HOS3 = [
+    # product/app
+    "product/app/AiasstVision",
+    "product/app/AnalyticsCore",
+    "product/app/CarWith",
+    "product/app/CatchLog",
+    "product/app/HybridPlatform",
+    "product/app/MiBugReportPS3",
+    "product/app/MINextpay",
+    "product/app/MIS",
+    "product/app/MITSMClient",
+    "product/app/MIUIAiasstService",
+    "product/app/MIUIgreenguard",
+    "product/app/MIUISecurityInputMethod",
+    "product/app/MIUISuperMarket",
+    "product/app/MSA",
+    "product/app/PaymentService",
+    "product/app/SogouIME",
+    "product/app/system",
+    "product/app/ThirdAppAssistant",
+    "product/app/Updater",
+    "product/app/UPTsmService",
+    "product/app/VoiceAssistAndroidT",
+    "product/app/VoiceTrigger",
+    "product/app/XiaoaiRecommendation",
+    "product/app/XMSFKeeperAll",
+    # product/data-app
+    "product/data-app/BaiduIME",
+    "product/data-app/Health",
+    "product/data-app/iFlytekIME",
+    "product/data-app/MIGalleryLockscreen",
+    "product/data-app/MIPay",
+    "product/data-app/MiRadio",
+    "product/data-app/MIService",
+    "product/data-app/MiShop",
+    "product/data-app/MIUIDuokanReader",
+    "product/data-app/MIUIEmail",
+    "product/data-app/MIUIGameCenter",
+    "product/data-app/MIUIHuanji",
+    "product/data-app/MIUIMiDrive",
+    "product/data-app/MIUIMusicT",
+    "product/data-app/MIUINewHome_Removable",
+    "product/data-app/MIUIVideo",
+    "product/data-app/MIUIVirtualSim",
+    "product/data-app/MIUIXiaoAiSpeechEngine",
+    "product/data-app/MIUIYoupin",
+    "product/data-app/OS2VipAccount",
+    "product/data-app/SmartHome",
+    "product/data-app/VoiceAssistProxy",
+    # product/priv-app
+    "product/priv-app/GooglePlayServicesUpdater",
+    "product/priv-app/MiGameCenterSDKService",
+    "product/priv-app/MiniGameService",
+    "product/priv-app/MirrorOS3",
+    "product/priv-app/MIUIBrowser",
+    "product/priv-app/MIUIQuickSearchBox",
+    "product/priv-app/MIUIYellowPage",
+]
+DEBLOAT_HOS4: List[str] = [
+    # TODO: hos4 list pending
+]
+DEBLOAT = {"hos3": DEBLOAT_HOS3, "hos4": DEBLOAT_HOS4}
+# Removed for EVERY version (not part of the per-version lists).
+DEBLOAT_COMMON_FILES = ["mi_ext/etc/init/init.miui.mi_ext.rc"]
+
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
 SUPER_SPLIT_PARTS = 54
 
@@ -364,6 +433,27 @@ def unpack_partitions(partitions: List[str], img_dir: Path, out_root: Path) -> N
         count = unpack_partition_image(img_path, dest_dir)
         print(f"  -> {dest_dir} ({count} files)")
     print(f"Unpacking into {out_root} completed.\n")
+
+
+def apply_debloat(unpacked_root: Path, version: str) -> None:
+    """Delete the debloat list entries for a HyperOS version from the unpacked
+    port tree (plus the init.miui.mi_ext.rc file, removed for every version).
+    Missing entries only warn — OTAs differ between builds."""
+    entries = list(DEBLOAT.get(version, [])) + DEBLOAT_COMMON_FILES
+    print(f"=== Applying debloat list '{version}' ({len(entries)} entries) ===")
+    removed, missing = 0, 0
+    for rel in entries:
+        target = unpacked_root / rel
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+            removed += 1
+        elif target.is_file() or target.is_symlink():
+            target.unlink()
+            removed += 1
+        else:
+            print(f"  [missing, skip] {rel}")
+            missing += 1
+    print(f"Debloat done: removed {removed}, missing {missing}.\n")
 
 
 def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
@@ -685,9 +775,16 @@ def main() -> None:
         help="Package type: 'universal' keeps META-INF (recovery + fastboot), "
              "'fastboot-only' removes META-INF (default: universal)",
     )
+    parser.add_argument(
+        "--debloat",
+        choices=["auto", "hos3", "hos4", "none"],
+        default="auto",
+        help="Debloat list to apply to the unpacked port tree: 'auto' uses the "
+             "--hyper-version list, 'none' skips debloating (default: auto)",
+    )
     args = parser.parse_args()
     print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version}, "
-          f"package: {args.package_type})...\n")
+          f"package: {args.package_type}, debloat: {args.debloat})...\n")
 
     # Step 1: Tools Setup
     setup_tools()
@@ -708,6 +805,13 @@ def main() -> None:
     unpack_partitions(STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS,
                       EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
     unpack_partitions(PORT_PARTITIONS, EXTRACTED_PORT_DIR, UNPACKED_PORT_DIR)
+
+    # Step 4b: Debloat the unpacked port tree (before the rebuild bakes it in)
+    debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
+    if debloat_version == "none":
+        print("Debloat skipped (--debloat none).\n")
+    else:
+        apply_debloat(UNPACKED_PORT_DIR, debloat_version)
 
     # Step 5: Rebuild partition images from (patched) unpacked trees.
     # NOTE: stock product/system_ext are donors only (files are copied out of
