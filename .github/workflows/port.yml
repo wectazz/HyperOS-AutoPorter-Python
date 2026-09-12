@@ -45,6 +45,16 @@ on:
         options:
           - "yes"
           - "no"
+      ext4_rw:
+        description: 'Comma-separated partitions to rebuild as ext4 RW (all/none)'
+        required: false
+        default: 'product,system'
+        type: string
+      ext4_free_mb:
+        description: 'Free megabytes to keep in each ext4 RW partition'
+        required: false
+        default: 150
+        type: number
 
 jobs:
   build:
@@ -86,7 +96,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }}
+          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }}
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4

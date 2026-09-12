@@ -406,6 +406,11 @@ SUPER_SPLIT_PARTS = 54
 # 6.6+ — unreadable images = bootloop.
 EROFS_COMPRESSOR = "lz4hc,10"
 
+# ext4 RW builds (--ext4-rw): journal/metadata headroom on top of the free
+# target, so `df` really shows the requested free megabytes. -m 0 (no
+# root-reserved blocks) is used for these so reserved space doesn't eat it.
+EXT4_RW_MARGIN_MB = 128
+
 
 def make_executable(path: Path) -> None:
     """Ensure binary file is executable (chmod +x)."""
@@ -1230,8 +1235,28 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
         shutil.rmtree(work_root, ignore_errors=True)
 
 
-def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
+def parse_ext4_rw(value: str, valid: List[str]) -> set:
+    """Parse the --ext4-rw partition set: comma-separated names, "all" or
+    "none"/empty. Unknown names fail fast (before the long build)."""
+    items = [p.strip().lower() for p in value.split(",") if p.strip()]
+    if not items or items == ["none"]:
+        return set()
+    if items == ["all"]:
+        return set(valid)
+    unknown = [p for p in items if p not in valid]
+    if unknown:
+        raise RuntimeError(f"Unknown partitions in --ext4-rw: {unknown}. "
+                           f"Valid: {sorted(valid)} + all/none")
+    return set(items)
+
+
+def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = False,
+                            free_mb: int = 150) -> None:
     """Rebuild a partition .img from an unpacked tree, matching the original format.
+
+    With force_ext4 the image is built as ext4 regardless of the original
+    format, sized tree + free_mb + margin with -m 0 so the free megabytes are
+    really visible in df (RW partitions).
 
     The original image is replaced atomically (build to temp file + rename),
     so a failed build keeps the previous image intact.
@@ -1254,12 +1279,14 @@ def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
 
     tmp_path = img_path.with_name(img_path.name + ".new")
     try:
-        if fmt == "erofs":
+        if fmt == "erofs" and not force_ext4:
             mkfs_bin = shutil.which("mkfs.erofs")
             if not mkfs_bin:
                 raise RuntimeError("mkfs.erofs not found: install erofs-utils to rebuild EROFS images")
             cmd = [mkfs_bin, f"-z{EROFS_COMPRESSOR}", str(tmp_path), str(src_dir)]
-        else:  # ext4
+        else:  # ext4 (native or forced RW conversion)
+            if force_ext4 and fmt != "ext4":
+                print(f"  converting {img_path.name} to ext4 RW ({fmt} -> ext4)")
             mkfs_bin = shutil.which("mkfs.ext4")
             if not mkfs_bin:
                 raise RuntimeError("mkfs.ext4 not found: install e2fsprogs to rebuild ext4 images")
@@ -1270,9 +1297,17 @@ def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
                     tree_size += p.lstat().st_size
                 except OSError:
                     pass
-            new_size = max(img_path.stat().st_size, int(tree_size * 1.1) + 32 * 1024 * 1024)
-            cmd = [mkfs_bin, "-F", "-d", str(src_dir), str(tmp_path),
-                   str((new_size + 4095) // 4096)]
+            if force_ext4:
+                new_size = tree_size + (free_mb + EXT4_RW_MARGIN_MB) * 1024 * 1024
+            else:
+                new_size = max(img_path.stat().st_size, int(tree_size * 1.1) + 32 * 1024 * 1024)
+            cmd = [mkfs_bin, "-F"]
+            if force_ext4:
+                # no root-reserved blocks: the free target must be visible/usable.
+                # explicit -b 4096: without it mke2fs silently picks 1K blocks on
+                # small filesystems and the image comes out 4x smaller than asked.
+                cmd += ["-m", "0", "-b", "4096"]
+            cmd += ["-d", str(src_dir), str(tmp_path), str((new_size + 4095) // 4096)]
 
         # mkfs tools are chatty; show output only on failure
         proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
@@ -1286,8 +1321,10 @@ def rebuild_partition_image(img_path: Path, src_dir: Path) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
-def rebuild_partition_images(partitions: List[str], unpacked_root: Path, img_dir: Path) -> None:
-    """Rebuild every listed partition .img in img_dir from unpacked_root/<name>/ trees."""
+def rebuild_partition_images(partitions: List[str], unpacked_root: Path, img_dir: Path,
+                             ext4_rw: set = frozenset(), free_mb: int = 150) -> None:
+    """Rebuild every listed partition .img in img_dir from unpacked_root/<name>/ trees.
+    Partitions in ext4_rw are forced to ext4 with free_mb megabytes free."""
     print(f"=== Rebuilding {len(partitions)} partition images in {img_dir} ===")
     for name in partitions:
         src_dir = unpacked_root / name
@@ -1296,10 +1333,13 @@ def rebuild_partition_images(partitions: List[str], unpacked_root: Path, img_dir
         img_path = img_dir / f"{name}.img"
         if not img_path.exists():
             raise FileNotFoundError(f"Missing required partition image: {img_path}")
-        print(f"Rebuilding {name}.img from {src_dir}...")
+        forced = name in ext4_rw
+        print(f"Rebuilding {name}.img from {src_dir}..."
+              f"{' [ext4 RW]' if forced else ''}")
         fmt = detect_image_format(img_path)
-        rebuild_partition_image(img_path, src_dir)
-        print(f"  -> {img_path} ({img_path.stat().st_size // 1024 // 1024}MB, {fmt})")
+        rebuild_partition_image(img_path, src_dir, force_ext4=forced, free_mb=free_mb)
+        print(f"  -> {img_path} ({img_path.stat().st_size // 1024 // 1024}MB, {fmt}"
+              f"{'->ext4' if forced and fmt != 'ext4' else ''})")
     print(f"Rebuilding in {img_dir} completed.\n")
 
 
@@ -1574,10 +1614,24 @@ def main() -> None:
         help="Rename fileencryption -> fileencryptable in vendor fstab "
              "(decrypted /data, format data after flash) (default: no)",
     )
+    parser.add_argument(
+        "--ext4-rw",
+        default="product,system",
+        help="Comma-separated partitions to rebuild as ext4 RW "
+             "(erofs ones get converted), 'all' or 'none' "
+             "(default: product,system)",
+    )
+    parser.add_argument(
+        "--ext4-free-mb",
+        type=int,
+        default=150,
+        help="Free megabytes to keep in each ext4 RW partition (default: 150)",
+    )
     args = parser.parse_args()
     print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version}, "
           f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
-          f"decrypt-data: {args.decrypt_data})...\n")
+          f"decrypt-data: {args.decrypt_data}, ext4-rw: {args.ext4_rw}, "
+          f"ext4-free: {args.ext4_free_mb}MB)...\n")
 
     # Step 1: Tools Setup
     setup_tools()
@@ -1652,8 +1706,18 @@ def main() -> None:
     # Step 5: Rebuild partition images from (patched) unpacked trees.
     # NOTE: stock product/system_ext are donors only (files are copied out of
     # them into unpacked_port later) — never rebuilt, never packed into super.
-    rebuild_partition_images(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR)
-    rebuild_partition_images(STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)
+    # ext4_rw names can only match rebuilt partitions, so stock extras
+    # (same names as port ones) are never affected.
+    ext4_rw = parse_ext4_rw(args.ext4_rw, sorted(set(STOCK_PARTITIONS
+                                                       + STOCK_EXTRA_PARTITIONS
+                                                       + PORT_PARTITIONS)))
+    if ext4_rw:
+        print(f"ext4 RW partitions: {sorted(ext4_rw)} "
+              f"(+{args.ext4_free_mb}MB free each)\n")
+    rebuild_partition_images(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR,
+                             ext4_rw, args.ext4_free_mb)
+    rebuild_partition_images(STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR,
+                             ext4_rw, args.ext4_free_mb)
 
     # Step 5b: Drop unpacked trees — the rebuild is done and nothing below
     # uses them; lpmake needs ~super_size bytes free right after this.
