@@ -351,6 +351,7 @@ DEBLOAT_COMMON_FILES = ["mi_ext/etc/init/init.miui.mi_ext.rc"]
 # (duchamp), hence not versioned.
 STOCK_DEBLOAT = [
     "vendor/etc/voicecommand",
+    "vendor/etc/thermal",
 ]
 
 # fstab option substrings stripped from vendor/etc/fstab.* lines (AVB disable).
