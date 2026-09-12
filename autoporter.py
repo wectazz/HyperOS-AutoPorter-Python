@@ -760,18 +760,22 @@ def split_file(src_path: Path, dest_dir: Path, parts: int, prefix: str) -> None:
     (offset where this part belongs) + one RAW chunk with the data. That way
     `fastboot flash super` writes every part at its own offset and recovery
     `package_unsparse_file` handles them (plain raw slices would all land at
-    offset 0). Chunk size is floor(total / parts) rounded down to 4K and the
-    last part takes the remainder, so the split always yields exactly `parts`
-    non-empty chunks. Output names are <prefix>0 .. <prefix>{parts-1}
-    (0-based, as the install scripts and updater-script expect).
+    offset 0). Sizing is exactly UKA: chunk = ceil(size_in_MB / parts) whole
+    MB (size first floored to MiB, like busybox expr integer math); the last
+    part takes the remainder, so a 9GiB super yields 53 full chunks + a smaller
+    last one. Output names are <prefix>0 .. <prefix>{parts-1} (0-based — UKA
+    numbers from 1 and renames, same final result — as the install scripts
+    and updater-script expect).
     """
     block_size = 4096
     total = src_path.stat().st_size
     if total % block_size != 0:
         raise ValueError(f"{src_path.name} size {total} is not a multiple of {block_size}")
-    chunk_size = (total // parts // block_size) * block_size
-    if chunk_size < block_size:
+    size_mb = total // (1024 * 1024)
+    piece_mb = (size_mb + parts - 1) // parts
+    if piece_mb < 1:
         raise ValueError(f"{src_path.name} too small to split into {parts} parts")
+    chunk_size = piece_mb * 1024 * 1024
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     offset_blocks = 0
@@ -805,7 +809,7 @@ def split_file(src_path: Path, dest_dir: Path, parts: int, prefix: str) -> None:
                 out.write(data)
             offset_blocks += raw_blocks
     print(f"Split {src_path.name} ({total} bytes) into {parts} sparse parts "
-          f"(~{chunk_size // 1024 // 1024}MB each) in {dest_dir}.")
+          f"(~{piece_mb}MB each) in {dest_dir}.")
 
 
 def assemble_package(
