@@ -124,6 +124,14 @@ DEBLOAT_HOS3 = [
     "product/priv-app/MIUIBrowser",
     "product/priv-app/MIUIQuickSearchBox",
     "product/priv-app/MIUIYellowPage",
+    # system_ext/app
+    "system_ext/app/DebugLoggerUI",
+    "system_ext/app/digitalkey",
+    "system_ext/app/MiSightService",
+    "system_ext/app/MiuiDaemon",
+    # system_ext/priv-app
+    "system_ext/priv-app/VoiceCommand",
+    "system_ext/priv-app/VoiceUnlock",
 ]
 DEBLOAT_HOS4: List[str] = [
     # TODO: hos4 list pending
