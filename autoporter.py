@@ -69,7 +69,7 @@ PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metada
 # Single files: (stock path, port path). duchamp.xml is per-device — extend the
 # list when other devices get supported.
 DONOR_FILES = [
-    ("product/etc/device_features/duchamp.xml", "product/etc/duchamp.xml"),
+    ("product/etc/device_features/duchamp.xml", "product/etc/device_features/duchamp.xml"),
 ]
 # Whole directories merged recursively (all files).
 DONOR_DIRS = [
