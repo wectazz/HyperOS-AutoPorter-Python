@@ -93,18 +93,58 @@ MIUI_SERVICES_METHOD_PATCHES = [
 # (.registers/.params/annotations) and before the first instruction, under a
 # unique :bypass_secure_flag label (never :cond_N — those collide with
 # baksmali's own labels). Matched by descriptor + markers, not by method name.
+# Shared secure-flag bypass block (method start): if
+# WindowState.isBypassSecureFlag() is true, return false (not secure).
+# Inserted under a unique :bypass_secure_flag label — never :cond_N, those
+# collide with baksmali's own labels (it renumbers them itself on re-decompile).
+SECURE_BYPASS_FALSE = [
+    "invoke-static {}, Lcom/android/server/wm/WindowState;->isBypassSecureFlag()Z",
+    "move-result v0",
+    "if-eqz v0, :bypass_secure_flag",
+    "const/4 v0, 0x0",
+    "return v0",
+    ":bypass_secure_flag",
+]
 MIUI_SERVICES_START_PATCHES = [
     (["WindowManagerServiceImpl.smali"],
      ["(Lcom/android/server/wm/RootWindowContainer;I)Z"],
+     SECURE_BYPASS_FALSE,
+     ["ActivityRecordStub;->isCompatibilityMode"]),
+]
+# Same, but the bypassed method returns a List (screenshot listeners):
+# bypass returns an empty list instead of false.
+SERVICES_START_PATCHES = [
+    (["WindowManagerService.smali"],
+     [],
      [
          "invoke-static {}, Lcom/android/server/wm/WindowState;->isBypassSecureFlag()Z",
          "move-result v0",
          "if-eqz v0, :bypass_secure_flag",
-         "const/4 v0, 0x0",
-         "return v0",
+         "invoke-static {}, Ljava/util/Collections;->emptyList()Ljava/util/List;",
+         "move-result-object v0",
+         "return-object v0",
          ":bypass_secure_flag",
      ],
-     ["ActivityRecordStub;->isCompatibilityMode"]),
+     ["notifyScreenshotListeners()", "android.permission.STATUS_BAR_SERVICE"]),
+    (["WindowState.smali"],
+     ["isSecureLocked("],
+     SECURE_BYPASS_FALSE,
+     []),
+]
+# Whole new methods to insert: (target basenames, new method name fragment for
+# the duplicate guard, anchor method fragment to insert before, method block).
+SERVICES_NEW_METHODS = [
+    (["WindowState.smali"],
+     "isBypassSecureFlag(",
+     "isLegacyPolicyVisibility(",
+     ".method public static isBypassSecureFlag()Z\n"
+     "    .registers 2\n"
+     "    const-string/jumbo v0, \"persist.sys.secure_flag\"\n"
+     "    const/4 v1, 0x1\n"
+     "    invoke-static {v0, v1}, Landroid/os/SystemProperties;->getBoolean(Ljava/lang/String;Z)Z\n"
+     "    move-result v0\n"
+     "    return v0\n"
+     ".end method\n"),
 ]
 SERVICES_METHOD_PATCHES = [
     (["KeySetManagerService.smali"], ["checkUpgradeKeySetLocked("], "keep", "RETURN_TRUE"),
@@ -815,6 +855,34 @@ def insert_at_method_start(text: str, header_frags: List[str], insert_lines: Lis
     return "".join(out), patched
 
 
+def insert_new_method(text: str, method_frag: str, anchor_frag: str, block: str) -> tuple:
+    """Insert a whole new .method block before the first .method whose header
+    contains `anchor_frag` (or append at end of file with a warning if the
+    anchor is absent). If a .method header already contains `method_frag`,
+    skip with a warning (duplicate methods break assembly). Returns
+    (new_text, inserted: bool)."""
+    lines = text.splitlines(keepends=True)
+    for line in lines:
+        s = line.strip()
+        if s.startswith(".method") and method_frag in s:
+            print(f"  [warn] method already present, skip insert: {s}")
+            return text, False
+    block = block.strip() + "\n"
+    out: List[str] = []
+    inserted = False
+    for line in lines:
+        s = line.strip()
+        if not inserted and s.startswith(".method") and anchor_frag in s:
+            out.append("\n" + block)
+            inserted = True
+        out.append(line)
+    if not inserted:
+        print(f"  [warn] anchor {anchor_frag} not found, appending method at end")
+        out.append("\n" + block)
+        inserted = True
+    return "".join(out), inserted
+
+
 def insert_after_invokes(text: str, pattern: str) -> tuple:
     """Insert an XdConfig RETURN_TRUE call after every line matching `pattern`
     (same indent). Returns (new_text, match_count)."""
@@ -922,7 +990,7 @@ def check_dex_blob(path: Path, what: str) -> None:
 
 
 def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches,
-                    work_root: Path, start_patches=None) -> None:
+                    work_root: Path, start_patches=None, new_method_patches=None) -> None:
     """Decompile jar's classes*.dex with baksmali, inject dsv smali, apply the
     regex patches, reassemble with smali and replace the jar atomically."""
     if not jar_path.is_file():
@@ -1030,6 +1098,20 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                     path.write_text(new_text)
                     for header in patched:
                         print(f"  patched {path.name}: {header}")
+        # 3d. whole new methods (e.g. isBypassSecureFlag)
+        for basenames, method_frag, anchor_frag, block in (new_method_patches or []):
+            for base_name in basenames:
+                found = [p for d in dex_out_dirs.values() for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    new_text, inserted = insert_new_method(
+                        path.read_text(), method_frag, anchor_frag, block)
+                    if not inserted:
+                        continue
+                    path.write_text(new_text)
+                    print(f"  patched {path.name}: +new method {method_frag}")
         # 4. reassemble each dex (same --api it was decompiled with)
         new_blobs = {}
         for dex in dex_names:
@@ -1453,11 +1535,14 @@ def main() -> None:
             BASE_DIR / "smali_work" / "miui-services",
             start_patches=MIUI_SERVICES_START_PATCHES,
         )
-        # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void).
+        # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void,
+        # secure-flag bypass incl. a brand-new isBypassSecureFlag method).
         patch_jar_smali(
             UNPACKED_PORT_DIR / "system_ext" / "framework" / "services.jar",
             "services", SERVICES_METHOD_PATCHES, [],
             BASE_DIR / "smali_work" / "services",
+            start_patches=SERVICES_START_PATCHES,
+            new_method_patches=SERVICES_NEW_METHODS,
         )
     else:
         print("DSV smali patching skipped (--dsv no).\n")
