@@ -72,10 +72,11 @@ PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metada
 DSV_DIR = BASE_DIR / "dsv"
 
 # Method-body replacements: (target basenames, [method name + '('], registers,
-# XdConfig method or None). The whole body between the .method header and .end
-# method is replaced (annotations inside are dropped with it). The original
-# header line (with blacklist/greylist markers) is kept. call=None means a
-# plain void body (just return-void).
+# call). The whole body between the .method header and .end method is replaced
+# (annotations/.params inside are dropped with it). The original header line
+# (with blacklist/greylist markers) is kept. registers: int (fixed
+# .registers) or "keep" (reuse the original .registers/.locals line). call:
+# XdConfig method name, None (plain void body), or a list of custom body lines.
 FRAMEWORK_METHOD_PATCHES = [
     (["AssetManager.smali"], ["containsAllocatedTable("], 2, "RETURN_FALSE"),
     (["PackageParser$SigningDetails.smali", "SigningDetails.smali"],
@@ -86,6 +87,20 @@ FRAMEWORK_METHOD_PATCHES = [
 MIUI_SERVICES_METHOD_PATCHES = [
     (["PackageManagerServiceImpl.smali"], ["verifyIsolationViolation("], 3, None),
     (["PackageManagerServiceImpl.smali"], ["canBeUpdate("], 2, None),
+]
+SERVICES_METHOD_PATCHES = [
+    (["KeySetManagerService.smali"], ["checkUpgradeKeySetLocked("], "keep", "RETURN_TRUE"),
+    (["PackageManagerServiceUtils.smali"], ["checkDowngrade("], "keep", None),
+    (["PackageManagerServiceUtils.smali"],
+     ["matchSignatureInSystem(", "matchSignaturesCompat(", "matchSignaturesRecover(",
+      "verifySignatures("], "keep", "RETURN_FALSE"),
+    (["VerifyingSession.smali"], ["isVerificationEnabled("], "keep", "RETURN_FALSE"),
+    (["ReconcilePackageUtils.smali"], ["<clinit>("], 1, [
+        "invoke-static {}, Landroid/os/XdConfig;->RETURN_TRUE()Z",
+        "move-result v0",
+        "sput-boolean v0, Lcom/android/server/pm/ReconcilePackageUtils;->ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS:Z",
+        "return-void",
+    ]),
 ]
 # Invoke insertions: (target basenames, invoke-line regex). An
 # `XdConfig;->RETURN_TRUE()Z` call is inserted after EVERY matching line (with
@@ -676,21 +691,24 @@ def run_logged(cmd: List[str], what: str) -> None:
         raise subprocess.CalledProcessError(proc.returncode, proc.args)
 
 
-def replace_method_bodies(text: str, names: List[str], registers: int, call: str) -> tuple:
+def replace_method_bodies(text: str, names: List[str], registers, call) -> tuple:
     """Replace bodies of .method blocks whose header contains one of `names`
     (each name includes the opening paren, e.g. "checkCapability("). Returns
-    (new_text, patched_headers). Raises on an unterminated block."""
-    if call is None:
-        body = (f"    .registers {registers}\n"
-                f"    return-void\n")
+    (new_text, patched_headers). Raises on an unterminated block or a missing
+    .registers line in "keep" mode."""
+    if isinstance(call, list):
+        tail = [f"    {line}\n" for line in call]
+    elif call is None:
+        tail = ["    return-void\n"]
     else:
-        body = (f"    .registers {registers}\n"
-                f"    invoke-static {{}}, Landroid/os/XdConfig;->{call}()Z\n"
-                f"    move-result v0\n"
-                f"    return v0\n")
+        tail = [f"    invoke-static {{}}, Landroid/os/XdConfig;->{call}()Z\n",
+                "    move-result v0\n",
+                "    return v0\n"]
+    keep_regs = (registers == "keep")
     out: List[str] = []
     patched: List[str] = []
     skipping = False
+    kept_regs_line = None
     for line in text.splitlines(keepends=True):
         stripped = line.strip()
         if not skipping:
@@ -698,11 +716,21 @@ def replace_method_bodies(text: str, names: List[str], registers: int, call: str
             if stripped.startswith(".method") and any(
                     re.search(r"(?<![\w$])" + re.escape(n), stripped) for n in names):
                 patched.append(stripped)
-                out.append(body)
                 skipping = True
+                kept_regs_line = None
         elif stripped == ".end method":
+            if keep_regs:
+                if kept_regs_line is None:
+                    raise RuntimeError("No .registers/.locals in patched method body")
+                out.append(kept_regs_line)
+            else:
+                out.append(f"    .registers {registers}\n")
+            out.extend(tail)
             out.append(line)
             skipping = False
+        elif keep_regs and kept_regs_line is None and (
+                stripped.startswith(".registers") or stripped.startswith(".locals")):
+            kept_regs_line = line  # reuse original, emit at .end method
         # else: drop old body line
     if skipping:
         raise RuntimeError("Unterminated .method block while patching")
@@ -1269,9 +1297,16 @@ def main() -> None:
         help="Debloat list to apply to the unpacked port tree: 'auto' uses the "
              "--hyper-version list, 'none' skips debloating (default: auto)",
     )
+    parser.add_argument(
+        "--dsv",
+        choices=["yes", "no"],
+        default="yes",
+        help="Apply DSV smali patching - signature checks disabling "
+             "(framework, miui-services, services jars) (default: yes)",
+    )
     args = parser.parse_args()
     print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version}, "
-          f"package: {args.package_type}, debloat: {args.debloat})...\n")
+          f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv})...\n")
 
     # Step 1: Tools Setup
     setup_tools()
@@ -1308,18 +1343,28 @@ def main() -> None:
     else:
         apply_debloat(UNPACKED_PORT_DIR, debloat_version)
 
-    # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig).
-    patch_jar_smali(
-        UNPACKED_PORT_DIR / "system" / "system" / "framework" / "framework.jar",
-        "framework", FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
-        BASE_DIR / "smali_work" / "framework",
-    )
-    # Step 4f: Smali-patch miui-services.jar (signature checks -> void).
-    patch_jar_smali(
-        UNPACKED_PORT_DIR / "system_ext" / "framework" / "miui-services.jar",
-        "miui-services", MIUI_SERVICES_METHOD_PATCHES, [],
-        BASE_DIR / "smali_work" / "miui-services",
-    )
+    # Steps 4e-4g: DSV smali patching (signature checks disabling).
+    if args.dsv == "yes":
+        # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig).
+        patch_jar_smali(
+            UNPACKED_PORT_DIR / "system" / "system" / "framework" / "framework.jar",
+            "framework", FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
+            BASE_DIR / "smali_work" / "framework",
+        )
+        # Step 4f: Smali-patch miui-services.jar (signature checks -> void).
+        patch_jar_smali(
+            UNPACKED_PORT_DIR / "system_ext" / "framework" / "miui-services.jar",
+            "miui-services", MIUI_SERVICES_METHOD_PATCHES, [],
+            BASE_DIR / "smali_work" / "miui-services",
+        )
+        # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void).
+        patch_jar_smali(
+            UNPACKED_PORT_DIR / "system_ext" / "framework" / "services.jar",
+            "services", SERVICES_METHOD_PATCHES, [],
+            BASE_DIR / "smali_work" / "services",
+        )
+    else:
+        print("DSV smali patching skipped (--dsv no).\n")
 
     # Step 5: Rebuild partition images from (patched) unpacked trees.
     # NOTE: stock product/system_ext are donors only (files are copied out of

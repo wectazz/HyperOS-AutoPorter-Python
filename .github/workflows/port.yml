@@ -29,6 +29,14 @@ on:
           - hos3
           - hos4
           - none
+      dsv:
+        description: 'Apply DSV smali patches - signature checks disabling'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - "yes"
+          - "no"
 
 jobs:
   build:
@@ -70,7 +78,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }}
+          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }}
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
