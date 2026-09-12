@@ -509,6 +509,48 @@ def unpack_partitions(partitions: List[str], img_dir: Path, out_root: Path) -> N
     print(f"Unpacking into {out_root} completed.\n")
 
 
+def merge_tree_into(src_dir: Path, dest_dir: Path) -> None:
+    """Move every entry of src_dir into dest_dir, merging directories recursively.
+
+    Files/symlinks from src overwrite same-named ones in dest (with a warning).
+    """
+    for item in sorted(src_dir.iterdir()):
+        dest = dest_dir / item.name
+        if dest.exists() or dest.is_symlink():
+            if item.is_dir() and not item.is_symlink() \
+                    and dest.is_dir() and not dest.is_symlink():
+                merge_tree_into(item, dest)
+                try:
+                    item.rmdir()  # now empty (best effort)
+                except OSError:
+                    pass
+                continue
+            print(f"  [flatten] replacing {dest} with {item}")
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        shutil.move(str(item), str(dest))
+
+
+def flatten_pangu_system(product_dir: Path) -> None:
+    """Move <product>/pangu/system/* up into <product>/ (the port OTA nests
+    product content there). No-op when the nested dir is absent."""
+    nested = product_dir / "pangu" / "system"
+    if not nested.is_dir():
+        print("No pangu/system nesting in product, skip flattening.\n")
+        return
+    print(f"=== Flattening {nested} into {product_dir} ===")
+    merge_tree_into(nested, product_dir)
+    # drop the now-empty nesting (best effort, keep going if not empty)
+    for d in (nested, nested.parent):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    print("Flattening done.\n")
+
+
 def apply_debloat(unpacked_root: Path, version: str) -> None:
     """Delete the debloat list entries for a HyperOS version from the unpacked
     port tree (plus the init.miui.mi_ext.rc file, removed for every version).
@@ -880,7 +922,11 @@ def main() -> None:
                       EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
     unpack_partitions(PORT_PARTITIONS, EXTRACTED_PORT_DIR, UNPACKED_PORT_DIR)
 
-    # Step 4b: Debloat the unpacked port tree (before the rebuild bakes it in)
+    # Step 4b: Flatten port product nesting (pangu/system -> product root) so
+    # debloat paths and the rebuild see the final flat layout.
+    flatten_pangu_system(UNPACKED_PORT_DIR / "product")
+
+    # Step 4c: Debloat the unpacked port tree (before the rebuild bakes it in)
     debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
     if debloat_version == "none":
         print("Debloat skipped (--debloat none).\n")
