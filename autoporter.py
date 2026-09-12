@@ -1584,8 +1584,10 @@ def main() -> None:
         )
         # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void,
         # secure-flag bypass incl. a brand-new isBypassSecureFlag method).
+        # NOTE: services.jar lives in system/system (AOSP location), NOT in
+        # system_ext like miui-services.jar (proven by CI: absent under system_ext).
         patch_jar_smali(
-            UNPACKED_PORT_DIR / "system_ext" / "framework" / "services.jar",
+            UNPACKED_PORT_DIR / "system" / "system" / "framework" / "services.jar",
             "services", SERVICES_METHOD_PATCHES, [],
             BASE_DIR / "smali_work" / "services",
             start_patches=SERVICES_START_PATCHES,
