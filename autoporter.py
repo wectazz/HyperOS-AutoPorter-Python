@@ -345,6 +345,13 @@ DEBLOAT_HOS4: List[str] = [
 DEBLOAT = {"hos3": DEBLOAT_HOS3, "hos4": DEBLOAT_HOS4}
 # Removed for EVERY version (not part of the per-version lists).
 DEBLOAT_COMMON_FILES = ["mi_ext/etc/init/init.miui.mi_ext.rc"]
+# Debloat for the unpacked STOCK tree. NOTE: vendor exists only in stock
+# (super takes vendor from stock, never from the port) — there is no
+# unpacked_port/vendor, so vendor entries live here. Stock firmware is fixed
+# (duchamp), hence not versioned.
+STOCK_DEBLOAT = [
+    "vendor/etc/voicecommand",
+]
 
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
 SUPER_SPLIT_PARTS = 54
@@ -728,12 +735,10 @@ def apply_donor_files(stock_root: Path, port_root: Path) -> None:
     print(f"Donor files done: copied {copied}, missing {missing}.\n")
 
 
-def apply_debloat(unpacked_root: Path, version: str) -> None:
-    """Delete the debloat list entries for a HyperOS version from the unpacked
-    port tree (plus the init.miui.mi_ext.rc file, removed for every version).
-    Missing entries only warn — OTAs differ between builds."""
-    entries = list(DEBLOAT.get(version, [])) + DEBLOAT_COMMON_FILES
-    print(f"=== Applying debloat list '{version}' ({len(entries)} entries) ===")
+def apply_debloat_entries(unpacked_root: Path, entries: List[str], label: str) -> None:
+    """Delete entries from an unpacked tree. Missing entries only warn —
+    OTAs differ between builds."""
+    print(f"=== Applying debloat list {label} ({len(entries)} entries) ===")
     removed, missing = 0, 0
     for rel in entries:
         target = unpacked_root / rel
@@ -747,6 +752,20 @@ def apply_debloat(unpacked_root: Path, version: str) -> None:
             print(f"  [missing, skip] {rel}")
             missing += 1
     print(f"Debloat done: removed {removed}, missing {missing}.\n")
+
+
+def apply_debloat(unpacked_root: Path, version: str) -> None:
+    """Delete the debloat list entries for a HyperOS version from the unpacked
+    port tree (plus the init.miui.mi_ext.rc file, removed for every version)."""
+    apply_debloat_entries(unpacked_root,
+                          list(DEBLOAT.get(version, [])) + DEBLOAT_COMMON_FILES,
+                          f"'{version}'")
+
+
+def apply_stock_debloat(stock_root: Path) -> None:
+    """Delete the STOCK_DEBLOAT entries from the unpacked stock tree."""
+    if STOCK_DEBLOAT:
+        apply_debloat_entries(stock_root, STOCK_DEBLOAT, "stock")
 
 
 def run_logged(cmd: List[str], what: str) -> None:
@@ -1537,12 +1556,13 @@ def main() -> None:
     # rebuild bake the trees into images)
     apply_donor_files(UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR)
 
-    # Step 4d: Debloat the unpacked port tree (before the rebuild bakes it in)
+    # Step 4d: Debloat the unpacked trees (before the rebuild bakes them in)
     debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
     if debloat_version == "none":
         print("Debloat skipped (--debloat none).\n")
     else:
         apply_debloat(UNPACKED_PORT_DIR, debloat_version)
+        apply_stock_debloat(UNPACKED_STOCK_DIR)
 
     # Steps 4e-4g: DSV smali patching (signature checks disabling).
     if args.dsv == "yes":
