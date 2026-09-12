@@ -111,6 +111,15 @@ MIUI_SERVICES_START_PATCHES = [
      SECURE_BYPASS_FALSE,
      ["ActivityRecordStub;->isCompatibilityMode"]),
 ]
+# Literal string replacements across whole files: (target basenames, old, new).
+# E.g. notification patch for Chinese ROMs (applies to hos3 and hos4 alike,
+# like all dsv rules — dsv has no version branching).
+MIUI_SERVICES_REPLACE_PATCHES = [
+    (["ProcessSceneCleaner.smali", "BroadcastQueueModernStubImpl.smali",
+      "ProcessManagerService.smali"],
+     "Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z",
+     "Lmiui/os/Build;->IS_MIUI:Z"),
+]
 # Same, but the bypassed method returns a List (screenshot listeners):
 # bypass returns an empty list instead of false.
 SERVICES_START_PATCHES = [
@@ -990,7 +999,8 @@ def check_dex_blob(path: Path, what: str) -> None:
 
 
 def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches,
-                    work_root: Path, start_patches=None, new_method_patches=None) -> None:
+                    work_root: Path, start_patches=None, new_method_patches=None,
+                    replace_patches=None) -> None:
     """Decompile jar's classes*.dex with baksmali, inject dsv smali, apply the
     regex patches, reassemble with smali and replace the jar atomically."""
     if not jar_path.is_file():
@@ -1112,6 +1122,21 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                         continue
                     path.write_text(new_text)
                     print(f"  patched {path.name}: +new method {method_frag}")
+        # 3e. literal string replacements across whole files
+        for basenames, old, new in (replace_patches or []):
+            for base_name in basenames:
+                found = [p for d in dex_out_dirs.values() for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    text = path.read_text()
+                    count = text.count(old)
+                    if not count:
+                        print(f"  [warn] no target string in {path.relative_to(out_root)}")
+                        continue
+                    path.write_text(text.replace(old, new))
+                    print(f"  patched {path.name}: {count}x {old} -> {new}")
         # 4. reassemble each dex (same --api it was decompiled with)
         new_blobs = {}
         for dex in dex_names:
@@ -1534,6 +1559,7 @@ def main() -> None:
             "miui-services", MIUI_SERVICES_METHOD_PATCHES, [],
             BASE_DIR / "smali_work" / "miui-services",
             start_patches=MIUI_SERVICES_START_PATCHES,
+            replace_patches=MIUI_SERVICES_REPLACE_PATCHES,
         )
         # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void,
         # secure-flag bypass incl. a brand-new isBypassSecureFlag method).
