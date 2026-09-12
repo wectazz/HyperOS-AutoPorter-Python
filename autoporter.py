@@ -72,14 +72,20 @@ PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metada
 DSV_DIR = BASE_DIR / "dsv"
 
 # Method-body replacements: (target basenames, [method name + '('], registers,
-# XdConfig method). The whole body between the .method header and .end method
-# is replaced (annotations inside are dropped with it).
+# XdConfig method or None). The whole body between the .method header and .end
+# method is replaced (annotations inside are dropped with it). The original
+# header line (with blacklist/greylist markers) is kept. call=None means a
+# plain void body (just return-void).
 FRAMEWORK_METHOD_PATCHES = [
     (["AssetManager.smali"], ["containsAllocatedTable("], 2, "RETURN_FALSE"),
     (["PackageParser$SigningDetails.smali", "SigningDetails.smali"],
      ["checkCapability(", "checkCapabilityRecover(", "hasCommonAncestor(",
       "signaturesMatchExactly("], 4, "RETURN_TRUE"),
     (["StrictJarVerifier.smali"], ["verifyMessageDigest("], 3, "RETURN_TRUE"),
+]
+MIUI_SERVICES_METHOD_PATCHES = [
+    (["PackageManagerServiceImpl.smali"], ["verifyIsolationViolation("], 3, None),
+    (["PackageManagerServiceImpl.smali"], ["canBeUpdate("], 2, None),
 ]
 # Invoke insertions: (target basenames, invoke-line regex). An
 # `XdConfig;->RETURN_TRUE()Z` call is inserted after EVERY matching line (with
@@ -674,10 +680,14 @@ def replace_method_bodies(text: str, names: List[str], registers: int, call: str
     """Replace bodies of .method blocks whose header contains one of `names`
     (each name includes the opening paren, e.g. "checkCapability("). Returns
     (new_text, patched_headers). Raises on an unterminated block."""
-    body = (f"    .registers {registers}\n"
-            f"    invoke-static {{}}, Landroid/os/XdConfig;->{call}()Z\n"
-            f"    move-result v0\n"
-            f"    return v0\n")
+    if call is None:
+        body = (f"    .registers {registers}\n"
+                f"    return-void\n")
+    else:
+        body = (f"    .registers {registers}\n"
+                f"    invoke-static {{}}, Landroid/os/XdConfig;->{call}()Z\n"
+                f"    move-result v0\n"
+                f"    return v0\n")
     out: List[str] = []
     patched: List[str] = []
     skipping = False
@@ -1299,11 +1309,16 @@ def main() -> None:
         apply_debloat(UNPACKED_PORT_DIR, debloat_version)
 
     # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig).
-    # Extend with (miui-services.jar, services.jar) calls when their rules land.
     patch_jar_smali(
         UNPACKED_PORT_DIR / "system" / "system" / "framework" / "framework.jar",
         "framework", FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
         BASE_DIR / "smali_work" / "framework",
+    )
+    # Step 4f: Smali-patch miui-services.jar (signature checks -> void).
+    patch_jar_smali(
+        UNPACKED_PORT_DIR / "system_ext" / "framework" / "miui-services.jar",
+        "miui-services", MIUI_SERVICES_METHOD_PATCHES, [],
+        BASE_DIR / "smali_work" / "miui-services",
     )
 
     # Step 5: Rebuild partition images from (patched) unpacked trees.
