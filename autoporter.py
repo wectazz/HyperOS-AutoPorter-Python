@@ -107,7 +107,7 @@ SECURE_BYPASS_FALSE = [
 ]
 MIUI_SERVICES_START_PATCHES = [
     (["WindowManagerServiceImpl.smali"],
-     ["(Lcom/android/server/wm/RootWindowContainer;I)Z"],
+     ["notAllowCaptureDisplay(", "(Lcom/android/server/wm/RootWindowContainer;I)Z"],
      SECURE_BYPASS_FALSE,
      ["ActivityRecordStub;->isCompatibilityMode"]),
 ]
@@ -115,7 +115,7 @@ MIUI_SERVICES_START_PATCHES = [
 # bypass returns an empty list instead of false.
 SERVICES_START_PATCHES = [
     (["WindowManagerService.smali"],
-     [],
+     ["notifyScreenshotListeners("],
      [
          "invoke-static {}, Lcom/android/server/wm/WindowState;->isBypassSecureFlag()Z",
          "move-result v0",
