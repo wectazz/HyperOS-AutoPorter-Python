@@ -401,10 +401,10 @@ SUPER_SPLIT_PARTS = 54
 
 # EROFS compressor for rebuilt images. Target kernel is 6.1 (duchamp), so
 # MicroLZMA ("lzma,9", the maximum 1.7.1 offers) would also be readable, but
-# builds take much longer — "lz4hc,12" is the fast safe fallback (decodes via
+# builds take much longer — "lz4hc,9" is the fast safe fallback (decodes via
 # the plain LZ4 path everywhere lz4 works). Do NOT switch to deflate: it needs
 # 6.6+ — unreadable images = bootloop.
-EROFS_COMPRESSOR = "lz4hc,10"
+EROFS_COMPRESSOR = "lz4hc,9"
 
 # ext4 RW builds (--ext4-rw): journal/metadata headroom on top of the free
 # target, so `df` really shows the requested free megabytes. -m 0 (no
