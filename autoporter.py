@@ -1582,6 +1582,19 @@ def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
         ctx_lines.append(
             f"{_regexify_context_path(f'/{name}/lost+found')} "
             f"u:object_r:rootfs:s0")
+        # The mountpoint dir itself (/<part>) is looked up too and is
+        # covered by no stock pattern (proven by CI failure on product) —
+        # a `$`-anchored entry covers exactly it and nothing else, so real
+        # gaps elsewhere still fail loudly. Label = the tree root's own
+        # dumped context, system_file fallback.
+        try:
+            root_ctx = os.getxattr(src_dir, "security.selinux") \
+                .decode(errors="replace").split("\x00")[0].strip()
+        except OSError:
+            root_ctx = ""
+        if not root_ctx or root_ctx.count(":") < 2:
+            root_ctx = "u:object_r:system_file:s0"
+        ctx_lines.append(f"/{name}$ {root_ctx}")
         (img_dir / f"{name}.fs_config").write_text("\n".join(fs_lines) + "\n")
         (img_dir / f"{name}.file_contexts").write_text("\n".join(ctx_lines) + "\n")
         print(f"  {name}: sidecars written "
