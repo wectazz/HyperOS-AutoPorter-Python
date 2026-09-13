@@ -426,6 +426,12 @@ def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
 SUPER_SPLIT_PARTS = 54
 
+# lpmake metadata headroom for tight super packing (see repack_super_image).
+# Proven minimum on tools/lpmake (android-15 line): total+983040 bytes fails
+# with exit 70 "Not enough space on device", total+1MB builds cleanly —
+# verified locally, incl. the real 9-partition layout.
+SUPER_METADATA_RESERVE_MB = 1
+
 # EROFS compressor for rebuilt images. Target kernel is 6.1 (duchamp), so
 # MicroLZMA ("lzma,9", the maximum 1.7.1 offers) would also be readable, but
 # builds take much longer — "lz4hc,9" is the fast safe fallback (decodes via
@@ -1536,17 +1542,13 @@ def repack_super_image(
                 f"{part_name}_b:readonly:0:{group_b}",
             ])
 
-    # Calculate super device and group size with padding.
-    # Both slot groups get the same size (mirrors stock layout and leaves
-    # room for future OTA snapshot growth); with --virtual-ab the groups
-    # may overcommit the physical super size via copy-on-write.
-    padding = 64 * 1024 * 1024  # 64MB extra
-    group_size = total_size + padding
-    # Round super up to whole GiB like factory images / GUI tools (DNA) do:
-    # lpmake takes --device size literally and never rounds by itself.
-    super_size = group_size + (4 * 1024 * 1024)  # metadata header allowance
-    gib = 1024 * 1024 * 1024
-    super_size = ((super_size + gib - 1) // gib) * gib
+    # Tight packing: groups fit the partitions exactly, super weighs what
+    # the images weigh plus the lpmake metadata minimum only. No snapshot
+    # padding, no GiB rounding. Both slot groups get the same size (mirrors
+    # stock layout); with --virtual-ab the groups may overcommit the
+    # physical super size via copy-on-write.
+    group_size = total_size
+    super_size = total_size + SUPER_METADATA_RESERVE_MB * 1024 * 1024
 
     cmd = [
         lpmake_bin,
