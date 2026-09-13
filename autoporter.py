@@ -869,6 +869,24 @@ def flatten_pangu_system(product_dir: Path) -> None:
     print("Flattening done.\n")
 
 
+def move_data_app_to_app(product_dir: Path) -> None:
+    """Move <product>/data-app/* into <product>/app/, merging dirs
+    recursively (existing entries are replaced). Runs last, right before
+    the rebuild, so debloat/DSV/modded-apps results all end up in app/.
+    No-op when data-app is absent."""
+    src = product_dir / "data-app"
+    if not src.is_dir():
+        print("No product/data-app dir, skip moving into app/.\n")
+        return
+    print(f"=== Moving {src} into {product_dir / 'app'} ===")
+    merge_tree_into(src, product_dir / "app")
+    try:
+        src.rmdir()  # now empty (best effort)
+    except OSError:
+        pass
+    print("data-app -> app move done.\n")
+
+
 def apply_donor_files(stock_root: Path, port_root: Path) -> None:
     """Copy donor blobs from the unpacked stock trees into the unpacked port
     trees (device_features, displayconfig, product overlays, vndk/compos
@@ -1874,6 +1892,11 @@ def main() -> None:
         )
     else:
         print("DSV smali patching skipped (--dsv no).\n")
+
+    # Step 4h: Move product/data-app/* into product/app/ on the build tree.
+    # Runs last, right before the rebuild, so everything (debloat leftovers,
+    # DSV, modded apps) lands in app/.
+    move_data_app_to_app(patch_root / "product")
 
     # Step 5: Rebuild partition images from (patched) unpacked trees.
     # Port mode NOTE: stock product/system_ext are donors only (files are
