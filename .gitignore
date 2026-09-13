@@ -23,6 +23,14 @@ smali_work/
 # local SDK bundle (878MB, too big for git, not part of the build)
 otatools/
 
+# UnpackerSuper reference bundle + review copies (on-device ARM scripts,
+# must never be committed)
+binary/
+/menu
+/pack_img_e2fsdroid
+/repack_super
+/packer.py
+
 # flash template IS committed — re-include its payload despite the rules above
 !template/**/*.img
 !template/**/*.zip
