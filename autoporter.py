@@ -1455,8 +1455,8 @@ def parse_ext4_rw(value: str, valid: List[str]) -> set:
     return set(items)
 
 
-# Fixed mtime for e2fsdroid-built images (reproducible builds, packer parity).
-E2FSDROID_TIMESTAMP = "1230768000"
+# Fixed mtime for rebuilt images (reproducible builds, packer parity).
+FIXED_BUILD_TIMESTAMP = "1230768000"
 
 
 def generate_fs_config(part_name: str, tree_root: Path) -> List[str]:
@@ -1547,12 +1547,14 @@ def collect_file_contexts(part_name: str, tree_root: Path,
 
 def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
                    ext4_rw: set, fallback_files: List[Path]) -> None:
-    """Write `<part>.fs_config` + `<part>.file_contexts` next to each target
-    `.img` for erofs->ext4 conversions (the only ext4 the pipeline builds
-    from erofs originals; native ext4 originals keep the legacy build).
-    Runs on the final trees (after mods/debloat/data-app move), right before
-    the rebuild. Missing context sources only warn — the rebuild then uses
-    the legacy path for that partition."""
+    """Write build sidecars next to each target `.img`, from the final trees
+    (after mods/debloat/data-app move), right before the rebuild:
+    - erofs->ext4 conversions: `<part>.fs_config` + `<part>.file_contexts`;
+    - erofs->erofs rebuilds: `<part>.file_contexts` only (uid/gid/mode/caps
+      come from the tree itself at mkfs time, no fs_config needed).
+    Native ext4 originals keep the legacy build (no sidecars). Missing
+    context sources only warn — the rebuild then uses the legacy path for
+    that partition."""
     print(f"=== Generating build sidecars in {img_dir} ===")
     for name in partitions:
         img_path = img_dir / f"{name}.img"
@@ -1563,42 +1565,44 @@ def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
             orig_fmt = detect_image_format(img_path)
         except RuntimeError:
             continue  # same: rebuild raises with context
-        if orig_fmt != "erofs" or name not in ext4_rw:
+        if orig_fmt != "erofs":
             if name in ext4_rw:
                 print(f"  [warn] {name}.img is native {orig_fmt}, no sidecars — "
                       f"legacy build without contexts")
             continue
-        fs_lines = generate_fs_config(name, src_dir)
         ctx_lines = collect_file_contexts(name, src_dir, fallback_files)
         if len(ctx_lines) <= 1:
             print(f"  [warn] no file_contexts sources for {name}, "
                   f"legacy build without contexts")
             continue
-        # mke2fs always creates lost+found (absent from the source tree);
-        # e2fsdroid labels every dir entry and fails fast on a miss, so both
-        # sidecars must cover it explicitly (0700 root, like mke2fs makes it;
-        # pattern form — exact paths never match this lookup, proven).
-        fs_lines.append(f"{name}/lost+found 0 0 0700")
-        ctx_lines.append(
-            f"{_regexify_context_path(f'/{name}/lost+found')} "
-            f"u:object_r:rootfs:s0")
-        # The mountpoint dir itself (/<part>) is looked up too and is
-        # covered by no stock pattern (proven by CI failure on product) —
-        # a `$`-anchored entry covers exactly it and nothing else, so real
-        # gaps elsewhere still fail loudly. Label = the tree root's own
-        # dumped context, system_file fallback.
-        try:
-            root_ctx = os.getxattr(src_dir, "security.selinux") \
-                .decode(errors="replace").split("\x00")[0].strip()
-        except OSError:
-            root_ctx = ""
-        if not root_ctx or root_ctx.count(":") < 2:
-            root_ctx = "u:object_r:system_file:s0"
-        ctx_lines.append(f"/{name}$ {root_ctx}")
-        (img_dir / f"{name}.fs_config").write_text("\n".join(fs_lines) + "\n")
+        if name in ext4_rw:
+            fs_lines = generate_fs_config(name, src_dir)
+            # mke2fs always creates lost+found (absent from the source tree);
+            # e2fsdroid labels every dir entry and fails fast on a miss, so
+            # both sidecars must cover it explicitly (0700 root, like mke2fs
+            # makes it; pattern form — exact paths never match this lookup,
+            # proven).
+            fs_lines.append(f"{name}/lost+found 0 0 0700")
+            ctx_lines.append(
+                f"{_regexify_context_path(f'/{name}/lost+found')} "
+                f"u:object_r:rootfs:s0")
+            # The mountpoint dir itself (/<part>) is looked up too and is
+            # covered by no stock pattern (proven by CI failure on product) —
+            # a `$`-anchored entry covers exactly it and nothing else, so
+            # real gaps elsewhere still fail loudly. Label = the tree root's
+            # own dumped context, system_file fallback.
+            try:
+                root_ctx = os.getxattr(src_dir, "security.selinux") \
+                    .decode(errors="replace").split("\x00")[0].strip()
+            except OSError:
+                root_ctx = ""
+            if not root_ctx or root_ctx.count(":") < 2:
+                root_ctx = "u:object_r:system_file:s0"
+            ctx_lines.append(f"/{name}$ {root_ctx}")
+            (img_dir / f"{name}.fs_config").write_text("\n".join(fs_lines) + "\n")
+            print(f"  {name}: fs_config written ({len(fs_lines)} entries)")
         (img_dir / f"{name}.file_contexts").write_text("\n".join(ctx_lines) + "\n")
-        print(f"  {name}: sidecars written "
-              f"({len(fs_lines)} fs_config, {len(ctx_lines)} contexts)")
+        print(f"  {name}: file_contexts written ({len(ctx_lines)} entries)")
     print()
 
 
@@ -1638,10 +1642,26 @@ def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = Fa
     tmp_path = img_path.with_name(img_path.name + ".new")
     try:
         if fmt == "erofs" and not force_ext4:
-            mkfs_bin = shutil.which("mkfs.erofs")
-            if not mkfs_bin:
-                raise RuntimeError("mkfs.erofs not found: install erofs-utils to rebuild EROFS images")
-            cmd = [mkfs_bin, f"-z{EROFS_COMPRESSOR}", str(tmp_path), str(src_dir)]
+            side_ctx = img_path.parent / f"{part_name}.file_contexts"
+            mkfs_dev = TOOLS_DIR / "mkfs.erofs"
+            if mkfs_dev.is_file() and side_ctx.is_file():
+                # Contexts path: mount-point + selabels from the sidecar
+                # (owners/modes/caps come from the tree itself at mkfs time).
+                print(f"  building {img_path.name} with contexts "
+                      f"(vendored mkfs.erofs)")
+                cmd = [str(mkfs_dev), f"-z{EROFS_COMPRESSOR}",
+                       "-T", FIXED_BUILD_TIMESTAMP,
+                       "--mount-point", f"/{part_name}",
+                       "--file-contexts", str(side_ctx),
+                       str(tmp_path), str(src_dir)]
+            else:
+                if side_ctx.is_file():
+                    print(f"  [warn] tools/mkfs.erofs missing, "
+                          f"legacy build without contexts")
+                mkfs_bin = shutil.which("mkfs.erofs")
+                if not mkfs_bin:
+                    raise RuntimeError("mkfs.erofs not found: install erofs-utils to rebuild EROFS images")
+                cmd = [mkfs_bin, f"-z{EROFS_COMPRESSOR}", str(tmp_path), str(src_dir)]
         else:  # ext4 (native or forced RW conversion)
             if force_ext4 and fmt != "ext4":
                 print(f"  converting {img_path.name} to ext4 RW ({fmt} -> ext4)")
@@ -1678,7 +1698,7 @@ def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = Fa
                             "-m", "0", "-t", "ext4", "-b", "4096",
                             str(tmp_path), blocks],
                            f"mke2fs {img_path.name}")
-                e2fscmd = [str(e2fsdroid_bin), "-e", "-T", E2FSDROID_TIMESTAMP,
+                e2fscmd = [str(e2fsdroid_bin), "-e", "-T", FIXED_BUILD_TIMESTAMP,
                            "-C", str(side_fs), "-S", str(side_ctx),
                            "-f", str(src_dir), "-a", f"/{part_name}"]
                 if not force_ext4:
