@@ -1462,11 +1462,12 @@ FIXED_BUILD_TIMESTAMP = "1230768000"
 def generate_fs_config(part_name: str, tree_root: Path) -> List[str]:
     """Walk tree_root, emit fs_config lines for e2fsdroid: a `/ 0 0 0755`
     root entry plus `<part>/<relpath> uid gid mode [capabilities=0x...]`
-    per dir/regular file (e2fsdroid looks files up under the mountpoint
-    basename, without a leading slash; symlinks are skipped — e2fsdroid
-    copies them as-is). Owners/modes/caps are read live, so modded and
-    donor files added earlier are covered with whatever they carry
-    (root:root after normalize_tree_perms)."""
+    per dir, regular file AND symlink (e2fsdroid looks files up under the
+    mountpoint basename, without a leading slash; symlinks consume inodes
+    too, so omitting them starves the build — proven by CI inode exhaustion
+    on system). Owners/modes/caps are read live, so modded and donor files
+    added earlier are covered with whatever they carry (root:root after
+    normalize_tree_perms)."""
     lines = ["/ 0 0 0755"]
     for dirpath, dirnames, filenames in os.walk(tree_root, followlinks=False):
         dirnames.sort()
@@ -1476,9 +1477,8 @@ def generate_fs_config(part_name: str, tree_root: Path) -> List[str]:
                 st = os.lstat(p)
             except OSError:
                 continue
-            if stat.S_ISLNK(st.st_mode):
-                continue
-            if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+            if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)
+                    or stat.S_ISLNK(st.st_mode)):
                 continue
             rel = p.relative_to(tree_root).as_posix()
             line = (f"{part_name}/{rel} {st.st_uid} {st.st_gid} "
