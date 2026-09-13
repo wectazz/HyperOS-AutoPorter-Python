@@ -466,8 +466,26 @@ def setup_tools() -> None:
     os.environ["PATH"] = f"{TOOLS_DIR}:{os.environ.get('PATH', '')}"
 
     # Set chmod +x on binaries present in tools/
-    for tool_file in TOOLS_DIR.iterdir():
+    for tool_file in sorted(TOOLS_DIR.iterdir()):
         make_executable(tool_file)
+        if tool_file.is_file():
+            print(f"  tool: {tool_file.name} ({tool_file.stat().st_size} bytes)")
+
+    if hasattr(os, "geteuid"):
+        euid = os.geteuid()
+        print(f"Running as uid={euid} ({'root' if euid == 0 else 'non-root'})")
+    # Probe the vendored erofs extractor: xattr restore (needed by the
+    # contexts pipeline) only works with it, and only as root.
+    fsck_probe = TOOLS_DIR / "fsck.erofs"
+    if fsck_probe.is_file():
+        try:
+            subprocess.run([str(fsck_probe), "--help"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            print("Vendored fsck.erofs: runnable")
+        except OSError as e:
+            print(f"Vendored fsck.erofs: BROKEN ({e}), will fall back to system")
+    else:
+        print("Vendored fsck.erofs: MISSING (will fall back to system)")
 
     print("Tools preparation complete.\n")
 
@@ -722,6 +740,8 @@ def extract_erofs_image(img_path: Path, dest_dir: Path) -> int:
             raise subprocess.CalledProcessError(proc.returncode, proc.args)
         if with_xattrs:
             print(f"  extracted {img_path.name} with xattrs (vendored fsck.erofs)")
+        else:
+            print(f"  extracted {img_path.name} WITHOUT xattrs (system {cmd[0]})")
         return sum(1 for p in dest_dir.rglob("*") if p.is_file() or p.is_symlink())
     raise RuntimeError(f"all fsck.erofs attempts failed on {img_path.name}: {last_exc}")
 
