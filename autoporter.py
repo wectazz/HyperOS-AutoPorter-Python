@@ -1545,6 +1545,58 @@ def collect_file_contexts(part_name: str, tree_root: Path,
     return lines if len(lines) > 1 else []
 
 
+def _read_context(path: Path) -> str:
+    """Dumped SELinux context of path, '' when absent or malformed."""
+    try:
+        ctx = os.getxattr(path, "security.selinux") \
+            .decode(errors="replace").split("\x00")[0].strip()
+    except OSError:
+        return ""
+    return ctx if ctx.count(":") >= 2 else ""
+
+
+def _dir_anchor_lines(part_name: str, tree_root: Path) -> List[str]:
+    """`$`-anchored entries for every dir in the tree (mountpoint root
+    first): stock patterns describe files, but e2fsdroid also looks up
+    intermediate dirs and fails fast on a miss (proven by CI failures on
+    `/product`, then `/product/app`). Label = the dir's own dumped
+    context, else the nearest resolved parent (top-down), else
+    `system_file` for the mountpoint root (partition roots carry no xattr
+    in practice, yet are conventionally system_file). `$` matches exactly
+    its dir, so these lines can never shadow real patterns — and files
+    without coverage still fail loudly."""
+    lines: List[str] = []
+    resolved: dict = {}
+    rels = [""]
+    for dirpath, dirnames, _ in os.walk(tree_root, followlinks=False):
+        dirnames.sort()
+        for d in dirnames:
+            p = Path(dirpath) / d
+            if p.is_symlink():
+                continue
+            rels.append(p.relative_to(tree_root).as_posix())
+    rels.sort(key=lambda r: (r.count("/"), r))
+    for rel in rels:
+        abs_p = tree_root / rel if rel else tree_root
+        ctx = _read_context(abs_p)
+        if not ctx:
+            if not rel:
+                ctx = "u:object_r:system_file:s0"
+            else:
+                parent = rel
+                while parent:
+                    parent = parent.rpartition("/")[0]
+                    if parent in resolved:
+                        ctx = resolved[parent]
+                        break
+        if not ctx:
+            continue
+        resolved[rel] = ctx
+        abs_path = f"/{part_name}/{rel}" if rel else f"/{part_name}"
+        lines.append(f"{abs_path}$ {ctx}")
+    return lines
+
+
 def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
                    ext4_rw: set, fallback_files: List[Path]) -> None:
     """Write build sidecars next to each target `.img`, from the final trees
@@ -1586,21 +1638,12 @@ def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
             ctx_lines.append(
                 f"{_regexify_context_path(f'/{name}/lost+found')} "
                 f"u:object_r:rootfs:s0")
-            # The mountpoint dir itself (/<part>) is looked up too and is
-            # covered by no stock pattern (proven by CI failure on product) —
-            # a `$`-anchored entry covers exactly it and nothing else, so
-            # real gaps elsewhere still fail loudly. Label = the tree root's
-            # own dumped context, system_file fallback.
-            try:
-                root_ctx = os.getxattr(src_dir, "security.selinux") \
-                    .decode(errors="replace").split("\x00")[0].strip()
-            except OSError:
-                root_ctx = ""
-            if not root_ctx or root_ctx.count(":") < 2:
-                root_ctx = "u:object_r:system_file:s0"
-            ctx_lines.append(f"/{name}$ {root_ctx}")
             (img_dir / f"{name}.fs_config").write_text("\n".join(fs_lines) + "\n")
             print(f"  {name}: fs_config written ({len(fs_lines)} entries)")
+        # Dir-level `$` anchors (mountpoint root first): intermediate dirs
+        # are looked up too and covered by no stock pattern. Truth-or-omit,
+        # never guessed; `$` can't shadow real patterns.
+        ctx_lines[1:1] = _dir_anchor_lines(name, src_dir)
         (img_dir / f"{name}.file_contexts").write_text("\n".join(ctx_lines) + "\n")
         print(f"  {name}: file_contexts written ({len(ctx_lines)} entries)")
     print()
