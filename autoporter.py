@@ -1559,6 +1559,13 @@ def _sanitize_context_line(line: str):
         return None
     if not _CONTEXT_CTX_RE.match(ctx):
         return None
+    # The pattern must compile: an uncompilable pattern (e.g. unbalanced
+    # `[`, proven by bisecting CI's real file_contexts down to
+    # `/system/system/bin/[$`) fails lookups with cryptic errors.
+    try:
+        re.compile(path)
+    except re.error:
+        return None
     return f"{_regexify_context_path(path)}{rest} {ctx}"
 
 
@@ -1621,10 +1628,12 @@ def _read_context(path: Path, follow_symlinks: bool = True) -> str:
 
 
 def _escape_context_path(path: str) -> str:
-    """Escape regex metacharacters that break self-matching in `$` lines.
-    Proven: a literal `+` (libc++.so, lost+found) never matches itself as
-    a quantifier; `.` is harmless (matches itself among others)."""
-    return path.replace("+", r"\+")
+    """Escape every regex metacharacter in a literal tree path for `$`
+    anchor lines. Proven: an unescaped `+` (libc++.so) — and any other
+    metacharacter, e.g. unbalanced `[` (proven by CI bisected poison
+    `/system/system/bin/[$`) — never matches itself and can fail lookups
+    with cryptic errors. `/` is left alone."""
+    return "".join("\\" + c if c in "\\.+*?()[]{}^$|" else c for c in path)
 
 
 def _anchor_lines(part_name: str, tree_root: Path):
