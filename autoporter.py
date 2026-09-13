@@ -1556,6 +1556,13 @@ def _read_context(path: Path, follow_symlinks: bool = True) -> str:
     return ctx if ctx.count(":") >= 2 else ""
 
 
+def _escape_context_path(path: str) -> str:
+    """Escape regex metacharacters that break self-matching in `$` lines.
+    Proven: a literal `+` (libc++.so, lost+found) never matches itself as
+    a quantifier; `.` is harmless (matches itself among others)."""
+    return path.replace("+", r"\+")
+
+
 def _anchor_lines(part_name: str, tree_root: Path):
     """`$`-anchored entries for every dir, file and symlink in the tree.
     Returns (truth, inherit): `truth` holds paths whose context was dumped
@@ -1600,7 +1607,7 @@ def _anchor_lines(part_name: str, tree_root: Path):
                 continue
         resolved[rel] = ctx
         abs_path = f"/{part_name}/{rel}" if rel else f"/{part_name}"
-        tier.append(f"{abs_path}$ {ctx}")
+        tier.append(f"{_escape_context_path(abs_path)}$ {ctx}")
     return truth, inherit
 
 
