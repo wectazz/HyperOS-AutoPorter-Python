@@ -1545,56 +1545,63 @@ def collect_file_contexts(part_name: str, tree_root: Path,
     return lines if len(lines) > 1 else []
 
 
-def _read_context(path: Path) -> str:
+def _read_context(path: Path, follow_symlinks: bool = True) -> str:
     """Dumped SELinux context of path, '' when absent or malformed."""
     try:
-        ctx = os.getxattr(path, "security.selinux") \
+        ctx = os.getxattr(path, "security.selinux",
+                          follow_symlinks=follow_symlinks) \
             .decode(errors="replace").split("\x00")[0].strip()
     except OSError:
         return ""
     return ctx if ctx.count(":") >= 2 else ""
 
 
-def _dir_anchor_lines(part_name: str, tree_root: Path) -> List[str]:
-    """`$`-anchored entries for every dir in the tree (mountpoint root
-    first): stock patterns describe files, but e2fsdroid also looks up
-    intermediate dirs and fails fast on a miss (proven by CI failures on
-    `/product`, then `/product/app`). Label = the dir's own dumped
-    context, else the nearest resolved parent (top-down), else
+def _anchor_lines(part_name: str, tree_root: Path):
+    """`$`-anchored entries for every dir, file and symlink in the tree.
+    Returns (truth, inherit): `truth` holds paths whose context was dumped
+    from the tree itself (stock truth — wins over everything); `inherit`
+    holds the rest, labeled with the nearest resolved parent (top-down) or
     `system_file` for the mountpoint root (partition roots carry no xattr
     in practice, yet are conventionally system_file). `$` matches exactly
-    its dir, so these lines can never shadow real patterns — and files
-    without coverage still fail loudly."""
-    lines: List[str] = []
+    its path, so neither list can shadow real patterns placed between
+    them. Stock policy files simply don't cover every path (proven by CI
+    failures on whole priv-app castes) — without the inherit tier the
+    build could never go green; with it, unknowns get the parent context,
+    which is also the runtime default for new files."""
+    truth: List[str] = []
+    inherit: List[str] = []
     resolved: dict = {}
     rels = [""]
-    for dirpath, dirnames, _ in os.walk(tree_root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(tree_root, followlinks=False):
         dirnames.sort()
-        for d in dirnames:
-            p = Path(dirpath) / d
-            if p.is_symlink():
-                continue
+        base = Path(dirpath)
+        for d in dirnames + sorted(filenames):
+            p = base / d
             rels.append(p.relative_to(tree_root).as_posix())
     rels.sort(key=lambda r: (r.count("/"), r))
     for rel in rels:
         abs_p = tree_root / rel if rel else tree_root
-        ctx = _read_context(abs_p)
-        if not ctx:
-            if not rel:
-                ctx = "u:object_r:system_file:s0"
+        ctx = _read_context(abs_p, follow_symlinks=False)
+        tier = inherit
+        if ctx:
+            tier = truth
+        elif not rel:
+            ctx = "u:object_r:system_file:s0"
+        else:
+            parent = rel
+            while parent:
+                parent = parent.rpartition("/")[0]
+                if parent in resolved:
+                    ctx = resolved[parent]
+                    break
             else:
-                parent = rel
-                while parent:
-                    parent = parent.rpartition("/")[0]
-                    if parent in resolved:
-                        ctx = resolved[parent]
-                        break
-        if not ctx:
-            continue
+                ctx = ""
+            if not ctx:
+                continue
         resolved[rel] = ctx
         abs_path = f"/{part_name}/{rel}" if rel else f"/{part_name}"
-        lines.append(f"{abs_path}$ {ctx}")
-    return lines
+        tier.append(f"{abs_path}$ {ctx}")
+    return truth, inherit
 
 
 def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
@@ -1604,9 +1611,11 @@ def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
     - erofs->ext4 conversions: `<part>.fs_config` + `<part>.file_contexts`;
     - erofs->erofs rebuilds: `<part>.file_contexts` only (uid/gid/mode/caps
       come from the tree itself at mkfs time, no fs_config needed).
-    Native ext4 originals keep the legacy build (no sidecars). Missing
-    context sources only warn — the rebuild then uses the legacy path for
-    that partition."""
+    Native ext4 originals keep the legacy build (no sidecars).
+    `file_contexts` order is load-bearing: `/`, dumped-truth `$` lines,
+    ROM patterns (own selinux files, then plat/vendor fallbacks), explicit
+    `lost+found`, inherited `$` lines. Missing sources only warn — the
+    rebuild then uses the legacy path for that partition."""
     print(f"=== Generating build sidecars in {img_dir} ===")
     for name in partitions:
         img_path = img_dir / f"{name}.img"
@@ -1640,12 +1649,17 @@ def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
                 f"u:object_r:rootfs:s0")
             (img_dir / f"{name}.fs_config").write_text("\n".join(fs_lines) + "\n")
             print(f"  {name}: fs_config written ({len(fs_lines)} entries)")
-        # Dir-level `$` anchors (mountpoint root first): intermediate dirs
-        # are looked up too and covered by no stock pattern. Truth-or-omit,
-        # never guessed; `$` can't shadow real patterns.
-        ctx_lines[1:1] = _dir_anchor_lines(name, src_dir)
+        # `$` anchors: truth lines right after `/` (win over everything),
+        # inherit lines at the very end (lose to real patterns, catch the
+        # rest). `$` matches exactly its path, so neither tier can shadow
+        # real patterns placed between them.
+        truth, inherit = _anchor_lines(name, src_dir)
+        ctx_lines[1:1] = truth
+        ctx_lines.extend(inherit)
+        n_truth, n_inherit = len(truth), len(inherit)
         (img_dir / f"{name}.file_contexts").write_text("\n".join(ctx_lines) + "\n")
-        print(f"  {name}: file_contexts written ({len(ctx_lines)} entries)")
+        print(f"  {name}: file_contexts written ({len(ctx_lines)} entries: "
+              f"{n_truth} truth, {n_inherit} inherit)")
     print()
 
 
