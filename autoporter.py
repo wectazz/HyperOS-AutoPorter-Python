@@ -680,22 +680,48 @@ def extract_ext4_image(img_path: Path, dest_dir: Path) -> int:
 
 
 def extract_erofs_image(img_path: Path, dest_dir: Path) -> int:
-    """Extract EROFS image with fsck.erofs --extract. Returns file/symlink count."""
+    """Extract EROFS image with fsck.erofs --extract. Returns file/symlink count.
+
+    Prefers the vendored tools/fsck.erofs (dev build with xattr restore +
+    killpriv-order fix) with --xattrs, so owners/modes/xattrs land on the
+    tree (as root). On tooling failure (OSError — missing/broken binary)
+    falls back to system fsck.erofs without --xattrs (legacy: no xattrs);
+    data errors (nonzero exit) always raise."""
+    vendored = TOOLS_DIR / "fsck.erofs"
+    attempts = []
+    if vendored.is_file():
+        attempts.append(([str(vendored), f"--extract={dest_dir}", "--xattrs",
+                          str(img_path)], True))
     fsck_bin = shutil.which("fsck.erofs")
-    if not fsck_bin:
+    if not fsck_bin and not attempts:
         raise RuntimeError("fsck.erofs not found: install erofs-utils to unpack EROFS images")
+    if fsck_bin:
+        attempts.append(([fsck_bin, f"--extract={dest_dir}", str(img_path)], False))
     # fsck.erofs is silent on success; show only the tail on failure
-    proc = subprocess.run(
-        [fsck_bin, f"--extract={dest_dir}", str(img_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    if proc.returncode != 0:
-        print(f"fsck.erofs failed on {img_path.name} (exit {proc.returncode}). Last log lines:")
-        print("\n".join(proc.stdout.splitlines()[-30:]))
-        raise subprocess.CalledProcessError(proc.returncode, proc.args)
-    return sum(1 for p in dest_dir.rglob("*") if p.is_file() or p.is_symlink())
+    last_exc = None
+    for cmd, with_xattrs in attempts:
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except OSError as e:
+            print(f"  [warn] cannot run {cmd[0]} ({e}), trying next fsck.erofs")
+            last_exc = e
+            # drop partial output so the next attempt starts fresh
+            shutil.rmtree(dest_dir, ignore_errors=True)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            continue
+        if proc.returncode != 0:
+            print(f"fsck.erofs failed on {img_path.name} (exit {proc.returncode}). Last log lines:")
+            print("\n".join(proc.stdout.splitlines()[-30:]))
+            raise subprocess.CalledProcessError(proc.returncode, proc.args)
+        if with_xattrs:
+            print(f"  extracted {img_path.name} with xattrs (vendored fsck.erofs)")
+        return sum(1 for p in dest_dir.rglob("*") if p.is_file() or p.is_symlink())
+    raise RuntimeError(f"all fsck.erofs attempts failed on {img_path.name}: {last_exc}")
 
 
 def unpack_partition_image(img_path: Path, dest_dir: Path) -> int:
@@ -808,9 +834,27 @@ def normalize_tree_perms(root: Path) -> None:
     print()
 
 
+def copy_file_preserve(src: Path, dest: Path) -> None:
+    """copy2 + best-effort xattr carry-over (copy2 alone drops xattrs, which
+    would lose caps/selinux needed for fs_config generation later)."""
+    shutil.copy2(src, dest)
+    try:
+        names = os.listxattr(src, follow_symlinks=False)
+    except OSError:
+        return
+    for name in names:
+        try:
+            os.setxattr(dest, name,
+                        os.getxattr(src, name, follow_symlinks=False),
+                        follow_symlinks=False)
+        except OSError:
+            pass
+
+
 def copy_tree_into(src_dir: Path, dest_dir: Path) -> None:
-    """Copy-merge src_dir into dest_dir recursively, preserving symlinks.
-    Existing files/symlinks are replaced; existing dirs are merged."""
+    """Copy-merge src_dir into dest_dir recursively, preserving symlinks
+    and xattrs. Existing files/symlinks are replaced; existing dirs are
+    merged."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     for item in sorted(src_dir.iterdir()):
         dest = dest_dir / item.name
@@ -820,6 +864,16 @@ def copy_tree_into(src_dir: Path, dest_dir: Path) -> None:
             elif dest.exists() or dest.is_symlink():
                 dest.unlink()
             os.symlink(os.readlink(item), dest)
+            try:
+                for name in os.listxattr(item, follow_symlinks=False):
+                    try:
+                        os.setxattr(dest, name,
+                                    os.getxattr(item, name, follow_symlinks=False),
+                                    follow_symlinks=False)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
         elif item.is_dir():
             if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
                 dest.unlink()
@@ -827,7 +881,7 @@ def copy_tree_into(src_dir: Path, dest_dir: Path) -> None:
         else:
             if dest.is_dir() and not dest.is_symlink():
                 shutil.rmtree(dest)
-            shutil.copy2(item, dest)
+            copy_file_preserve(item, dest)
 
 
 def apply_modded_apps(mod_dir: Path, unpacked_root: Path) -> None:
@@ -1399,17 +1453,157 @@ def parse_ext4_rw(value: str, valid: List[str]) -> set:
     return set(items)
 
 
+# Fixed mtime for e2fsdroid-built images (reproducible builds, packer parity).
+E2FSDROID_TIMESTAMP = "1230768000"
+
+
+def generate_fs_config(part_name: str, tree_root: Path) -> List[str]:
+    """Walk tree_root, emit fs_config lines for e2fsdroid: a `/ 0 0 0755`
+    root entry plus `<part>/<relpath> uid gid mode [capabilities=0x...]`
+    per dir/regular file (e2fsdroid looks files up under the mountpoint
+    basename, without a leading slash; symlinks are skipped — e2fsdroid
+    copies them as-is). Owners/modes/caps are read live, so modded and
+    donor files added earlier are covered with whatever they carry
+    (root:root after normalize_tree_perms)."""
+    lines = ["/ 0 0 0755"]
+    for dirpath, dirnames, filenames in os.walk(tree_root, followlinks=False):
+        dirnames.sort()
+        for name in sorted(dirnames + filenames):
+            p = Path(dirpath) / name
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                continue
+            if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+                continue
+            rel = p.relative_to(tree_root).as_posix()
+            line = (f"{part_name}/{rel} {st.st_uid} {st.st_gid} "
+                    f"{stat.S_IMODE(st.st_mode):04o}")
+            if stat.S_ISREG(st.st_mode):
+                try:
+                    caps = os.getxattr(p, "security.capability")
+                except OSError:
+                    caps = b""
+                if caps:
+                    line += f" capabilities=0x{caps.hex()}"
+            lines.append(line)
+    return lines
+
+
+def _regexify_context_path(path: str) -> str:
+    """Append `(/.*)?` to exact (regex-free) context paths. The vendored
+    e2fsdroid (best-match lookup) only matches pattern entries — a literal
+    path never matches, proven empirically. `/` itself stays literal (the
+    fs root is resolved without lookup). A literal `+` in filenames
+    (lost+found) is escaped: as a regex quantifier it wouldn't even match
+    itself; other metacharacters mean the author wrote a real pattern,
+    kept verbatim."""
+    if path == "/":
+        return path
+    if "+" in path and not any(c in path for c in "*?[]()|^$\\"):
+        return path.replace("+", r"\+") + "(/.*)?"
+    if any(c in path for c in "*?+[]()|^$"):
+        return path
+    return path + "(/.*)?"
+
+
+def collect_file_contexts(part_name: str, tree_root: Path,
+                          fallback_files: List[Path]) -> List[str]:
+    """Assemble a file_contexts list for e2fsdroid: a `/` root entry, then
+    the partition's own `etc/selinux/*_file_contexts`, then fallbacks
+    (plat, vendor — specific-first). Exact paths are converted to
+    `(/.*)?` pattern form: this lookup only matches patterns (proven).
+    ROM selinux files always carry broad self-coverage (`/<part>(/.*)?`,
+    otherwise the AOSP build itself would fail the same way); if coverage
+    is still incomplete, e2fsdroid fails fast naming the missing label —
+    loud and actionable, never silent. Returns [] when nothing but the
+    root entry was found (caller falls back to the legacy build)."""
+    lines = ["/ u:object_r:rootfs:s0"]
+    seen = set(lines)
+    own = sorted((tree_root / "etc" / "selinux").glob("*_file_contexts")) \
+        if (tree_root / "etc" / "selinux").is_dir() else []
+    for src in own + list(fallback_files):
+        try:
+            text = src.read_text()
+        except OSError:
+            continue
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                parts[0] = _regexify_context_path(parts[0])
+                line = " ".join(parts)
+            if line not in seen:
+                seen.add(line)
+                lines.append(line)
+    return lines if len(lines) > 1 else []
+
+
+def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
+                   ext4_rw: set, fallback_files: List[Path]) -> None:
+    """Write `<part>.fs_config` + `<part>.file_contexts` next to each target
+    `.img` for erofs->ext4 conversions (the only ext4 the pipeline builds
+    from erofs originals; native ext4 originals keep the legacy build).
+    Runs on the final trees (after mods/debloat/data-app move), right before
+    the rebuild. Missing context sources only warn — the rebuild then uses
+    the legacy path for that partition."""
+    print(f"=== Generating build sidecars in {img_dir} ===")
+    for name in partitions:
+        img_path = img_dir / f"{name}.img"
+        src_dir = unpacked_root / name
+        if not img_path.is_file() or not src_dir.is_dir():
+            continue  # the rebuild step reports missing inputs itself
+        try:
+            orig_fmt = detect_image_format(img_path)
+        except RuntimeError:
+            continue  # same: rebuild raises with context
+        if orig_fmt != "erofs" or name not in ext4_rw:
+            if name in ext4_rw:
+                print(f"  [warn] {name}.img is native {orig_fmt}, no sidecars — "
+                      f"legacy build without contexts")
+            continue
+        fs_lines = generate_fs_config(name, src_dir)
+        ctx_lines = collect_file_contexts(name, src_dir, fallback_files)
+        if len(ctx_lines) <= 1:
+            print(f"  [warn] no file_contexts sources for {name}, "
+                  f"legacy build without contexts")
+            continue
+        # mke2fs always creates lost+found (absent from the source tree);
+        # e2fsdroid labels every dir entry and fails fast on a miss, so both
+        # sidecars must cover it explicitly (0700 root, like mke2fs makes it;
+        # pattern form — exact paths never match this lookup, proven).
+        fs_lines.append(f"{name}/lost+found 0 0 0700")
+        ctx_lines.append(
+            f"{_regexify_context_path(f'/{name}/lost+found')} "
+            f"u:object_r:rootfs:s0")
+        (img_dir / f"{name}.fs_config").write_text("\n".join(fs_lines) + "\n")
+        (img_dir / f"{name}.file_contexts").write_text("\n".join(ctx_lines) + "\n")
+        print(f"  {name}: sidecars written "
+              f"({len(fs_lines)} fs_config, {len(ctx_lines)} contexts)")
+    print()
+
+
 def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = False,
                             free_mb: int = 150) -> None:
     """Rebuild a partition .img from an unpacked tree, matching the original format.
 
     With force_ext4 the image is built as ext4 regardless of the original
     format, sized tree + free_mb + margin with -m 0 so the free megabytes are
-    really visible in df (RW partitions).
+    really visible in df (RW partitions). Ext4 builds use sidecar
+    `<part>.fs_config` / `<part>.file_contexts` (see build_sidecars) when
+    present: empty fs via the vendored AOSP mke2fs (journal KEPT, unlike
+    packer/UKA `^has_journal`) + populate/label via e2fsdroid — owners,
+    modes, caps and SELinux land in the image. Without sidecars (or without
+    the vendored tools) it falls back to plain `mkfs.ext4 -d`, as before.
 
     The original image is replaced atomically (build to temp file + rename),
     so a failed build keeps the previous image intact.
     """
+    part_name = img_path.stem
     fmt = detect_image_format(img_path)
     if fmt == "sparse":
         simg_bin = shutil.which("simg2img")
@@ -1436,9 +1630,6 @@ def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = Fa
         else:  # ext4 (native or forced RW conversion)
             if force_ext4 and fmt != "ext4":
                 print(f"  converting {img_path.name} to ext4 RW ({fmt} -> ext4)")
-            mkfs_bin = shutil.which("mkfs.ext4")
-            if not mkfs_bin:
-                raise RuntimeError("mkfs.ext4 not found: install e2fsprogs to rebuild ext4 images")
             # Size from the original image, grown if the tree no longer fits
             tree_size = 0
             for p in src_dir.rglob("*"):
@@ -1450,13 +1641,53 @@ def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = Fa
                 new_size = tree_size + (free_mb + EXT4_RW_MARGIN_MB) * 1024 * 1024
             else:
                 new_size = max(img_path.stat().st_size, int(tree_size * 1.1) + 32 * 1024 * 1024)
+            blocks = str((new_size + 4095) // 4096)
+            side_fs = img_path.parent / f"{part_name}.fs_config"
+            side_ctx = img_path.parent / f"{part_name}.file_contexts"
+            mke2fs_bin = TOOLS_DIR / "mke2fs"
+            e2fsdroid_bin = TOOLS_DIR / "e2fsdroid"
+            if side_fs.is_file() and side_ctx.is_file() \
+                    and mke2fs_bin.is_file() and e2fsdroid_bin.is_file():
+                # Contexts path: empty fs + populate/label via e2fsdroid.
+                # -s (shared_blocks dedup) only for non-RW, like packer.
+                try:
+                    with open(side_fs) as f:
+                        inodes = sum(1 for _ in f) + 8
+                except OSError:
+                    inodes = 5000
+                print(f"  building {img_path.name} with contexts "
+                      f"({inodes} inodes)")
+                run_logged([str(mke2fs_bin), "-F", "-L", part_name,
+                            "-I", "256", "-N", str(inodes),
+                            "-M", f"/{part_name}",
+                            "-m", "0", "-t", "ext4", "-b", "4096",
+                            str(tmp_path), blocks],
+                           f"mke2fs {img_path.name}")
+                e2fscmd = [str(e2fsdroid_bin), "-e", "-T", E2FSDROID_TIMESTAMP,
+                           "-C", str(side_fs), "-S", str(side_ctx),
+                           "-f", str(src_dir), "-a", f"/{part_name}"]
+                if not force_ext4:
+                    e2fscmd.append("-s")
+                e2fscmd.append(str(tmp_path))
+                run_logged(e2fscmd, f"e2fsdroid {img_path.name}")
+                os.replace(tmp_path, img_path)
+                return
+            if side_fs.is_file() or side_ctx.is_file():
+                print(f"  [warn] incomplete sidecars for {img_path.name}, "
+                      f"legacy build without contexts")
+            elif not mke2fs_bin.is_file() or not e2fsdroid_bin.is_file():
+                print(f"  [warn] tools/mke2fs or tools/e2fsdroid missing, "
+                      f"legacy build without contexts")
+            mkfs_bin = shutil.which("mkfs.ext4")
+            if not mkfs_bin:
+                raise RuntimeError("mkfs.ext4 not found: install e2fsprogs to rebuild ext4 images")
             cmd = [mkfs_bin, "-F"]
             if force_ext4:
                 # no root-reserved blocks: the free target must be visible/usable.
                 # explicit -b 4096: without it mke2fs silently picks 1K blocks on
                 # small filesystems and the image comes out 4x smaller than asked.
                 cmd += ["-m", "0", "-b", "4096"]
-            cmd += ["-d", str(src_dir), str(tmp_path), str((new_size + 4095) // 4096)]
+            cmd += ["-d", str(src_dir), str(tmp_path), blocks]
 
         # mkfs tools are chatty; show output only on failure
         proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
@@ -1904,26 +2135,42 @@ def main() -> None:
     # DSV, modded apps) lands in app/.
     move_data_app_to_app(patch_root / "product")
 
-    # Step 5: Rebuild partition images from (patched) unpacked trees.
-    # Port mode NOTE: stock product/system_ext are donors only (files are
-    # copied out of them into unpacked_port later) — never rebuilt, never
-    # packed into super. ext4_rw names can only match rebuilt partitions, so
-    # stock extras (same names as port ones) are never affected.
-    # Mod mode: the full stock set is rebuilt from the single stock tree.
+    # Rebuild jobs: (partitions, unpacked tree, image dir). Port mode rebuilds
+    # the port list from the port tree plus STOCK_PARTITIONS from the stock
+    # tree; mod mode rebuilds the full stock set from the single stock tree.
+    if args.mode == "port":
+        rebuild_jobs = [(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR),
+                        (STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)]
+    else:
+        rebuild_jobs = [(MOD_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)]
     ext4_rw = parse_ext4_rw(args.ext4_rw, sorted(set(STOCK_PARTITIONS
                                                        + STOCK_EXTRA_PARTITIONS
                                                        + PORT_PARTITIONS)))
     if ext4_rw:
         print(f"ext4 RW partitions: {sorted(ext4_rw)} "
               f"(+{args.ext4_free_mb}MB free each)\n")
-    if args.mode == "port":
-        rebuild_partition_images(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR,
-                                 ext4_rw, args.ext4_free_mb)
-        rebuild_partition_images(STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR,
-                                 ext4_rw, args.ext4_free_mb)
-    else:
-        rebuild_partition_images(MOD_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR,
-                                 ext4_rw, args.ext4_free_mb)
+
+    # Step 4i: Generate build sidecars (<part>.fs_config + <part>.file_contexts
+    # next to each target .img) for erofs->ext4 conversions, from the final
+    # trees. Fallback selinux files: plat from the build tree's system,
+    # vendor from the stock tree (both trees are unpacked in every mode).
+    plat_dir = patch_root / "system" / "etc" / "selinux"
+    vendor_dir = UNPACKED_STOCK_DIR / "vendor" / "etc" / "selinux"
+    fallback_files = sorted(plat_dir.glob("*_file_contexts")) \
+        if plat_dir.is_dir() else []
+    fallback_files += sorted(vendor_dir.glob("*_file_contexts")) \
+        if vendor_dir.is_dir() else []
+    for parts, uroot, idir in rebuild_jobs:
+        build_sidecars(parts, uroot, idir, ext4_rw, fallback_files)
+
+    # Step 5: Rebuild partition images from (patched) unpacked trees.
+    # Port mode NOTE: stock product/system_ext are donors only (files are
+    # copied out of them into unpacked_port later) — never rebuilt, never
+    # packed into super. ext4_rw names can only match rebuilt partitions, so
+    # stock extras (same names as port ones) are never affected.
+    # Mod mode: the full stock set is rebuilt from the single stock tree.
+    for parts, uroot, idir in rebuild_jobs:
+        rebuild_partition_images(parts, uroot, idir, ext4_rw, args.ext4_free_mb)
 
     # Step 5b: Drop unpacked trees — the rebuild is done and nothing below
     # uses them; lpmake needs ~super_size bytes free right after this.

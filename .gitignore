@@ -30,6 +30,7 @@ binary/
 /pack_img_e2fsdroid
 /repack_super
 /packer.py
+/rom.py
 
 # flash template IS committed — re-include its payload despite the rules above
 !template/**/*.img
