@@ -6,6 +6,7 @@ HyperOS AutoPorter - Automated Firmware Porting Tool
 import argparse
 import os
 import re
+import stat
 import struct
 import sys
 import shutil
@@ -42,10 +43,10 @@ PORT_URL = (
 )
 
 HOS3_GDRIVE_URL = (
-    "https://drive.google.com/file/d/1GMmz3S8KnYri11cKavSdkIC9U-x0YY4Q/view?usp=sharing"
+    "https://drive.google.com/file/d/1m8wWEUhEAOzirT6zefBtH8Bmm9ajDVVB/view?usp=sharing"
 )
 HOS4_GDRIVE_URL = (
-    "https://drive.google.com/file/d/1M1mNPWO5jt5Q1_AJCfpFp3VTmTycVJ3Q/view?usp=sharing"
+    "https://drive.google.com/file/d/10ySX6TCUqkDvvZPJ5HzYd53Eqeb5Aum5/view?usp=sharing"
 )
 
 # Modded apps sets per HyperOS version: (gdrive_url, output_dir, archive_name)
@@ -236,6 +237,7 @@ DEBLOAT_HOS3 = [
     "product/app/MIS",
     "product/app/MITSMClient",
     "product/app/MIUIAiasstService",
+    "product/app/MIUIPersonalAssistantPhoneOS3",
     "product/app/MIUIgreenguard",
     "product/app/MIUISecurityInputMethod",
     "product/app/MIUISuperMarket",
@@ -289,6 +291,11 @@ DEBLOAT_HOS3 = [
     # system_ext/priv-app
     "system_ext/priv-app/VoiceCommand",
     "system_ext/priv-app/VoiceUnlock",
+    # oat dirs stripped from kept apps (the app itself stays)
+    "product/priv-app/MiuiExtraPhoto/oat",
+    "product/priv-app/MiuiHome/oat",
+    "product/app/MIUISystemUIPlugin/oat",
+    "product/app/MIUIThemeManager/oat",
 ]
 DEBLOAT_HOS4: List[str] = [
     # product/app
@@ -358,6 +365,8 @@ DEBLOAT_HOS4: List[str] = [
     # system_ext/priv-app
     "system_ext/priv-app/VoiceCommand",
     "system_ext/priv-app/VoiceUnlock",
+    # oat dirs stripped from kept apps (the app itself stays)
+    "product/priv-app/MiuiExtraPhoto/oat",
 ]
 DEBLOAT = {"hos3": DEBLOAT_HOS3, "hos4": DEBLOAT_HOS4}
 # Removed for EVERY version (not part of the per-version lists).
@@ -519,6 +528,9 @@ def download_and_extract_gdrive_mod(gdrive_url: str, output_dir: Path, name: str
 
     top = sorted(p.name + ("/" if p.is_dir() else "") for p in output_dir.iterdir())
     print(f"{name} top-level layout: {', '.join(top)}")
+    # Archives carry arbitrary modes — normalize so rebuilt images get sane
+    # permissions regardless of how the zip was packed.
+    normalize_tree_perms(output_dir)
     print(f"Modded apps for {name} extracted and archive removed.\n")
 
 
@@ -744,6 +756,99 @@ def merge_tree_into(src_dir: Path, dest_dir: Path) -> None:
             else:
                 dest.unlink()
         shutil.move(str(item), str(dest))
+
+
+def normalize_tree_perms(root: Path) -> None:
+    """Normalize modes under root: dirs 0755, regular files 0644, symlinks
+    and special files untouched. Best-effort chown to root:root when running
+    as root (CI); otherwise ownership is left alone."""
+    print(f"=== Normalizing permissions under {root} ===")
+    os.chmod(root, 0o755)
+    files, dirs = 0, 0
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames:
+            p = Path(dirpath) / name
+            try:
+                if stat.S_ISLNK(os.lstat(p).st_mode):
+                    continue
+            except OSError:
+                continue
+            os.chmod(p, 0o755)
+            dirs += 1
+        for name in filenames:
+            p = Path(dirpath) / name
+            try:
+                if not stat.S_ISREG(os.lstat(p).st_mode):
+                    continue
+            except OSError:
+                continue
+            os.chmod(p, 0o644)
+            files += 1
+    print(f"  permissions normalized: {dirs} dir(s) 0755, {files} file(s) 0644")
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            for name in dirnames + filenames:
+                p = Path(dirpath) / name
+                try:
+                    if stat.S_ISLNK(os.lstat(p).st_mode):
+                        continue
+                    os.chown(p, 0, 0)
+                except OSError:
+                    pass
+        os.chown(root, 0, 0)
+        print("  ownership set to root:root")
+    else:
+        print("  ownership left alone (not running as root)")
+    print()
+
+
+def copy_tree_into(src_dir: Path, dest_dir: Path) -> None:
+    """Copy-merge src_dir into dest_dir recursively, preserving symlinks.
+    Existing files/symlinks are replaced; existing dirs are merged."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for item in sorted(src_dir.iterdir()):
+        dest = dest_dir / item.name
+        if item.is_symlink():
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            elif dest.exists() or dest.is_symlink():
+                dest.unlink()
+            os.symlink(os.readlink(item), dest)
+        elif item.is_dir():
+            if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                dest.unlink()
+            copy_tree_into(item, dest)
+        else:
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            shutil.copy2(item, dest)
+
+
+def apply_modded_apps(mod_dir: Path, unpacked_root: Path) -> None:
+    """Overlay the modded-apps set onto an unpacked tree: each top-level
+    partition dir (product/, system/, system_ext/, ...) merges recursively
+    into the same-named unpacked partition, modded files replacing stock
+    ones (system/ keeps its nested system/ level — both sides mirror it).
+    Port mode targets the port tree, mod mode the stock tree. Missing
+    partition dirs on either side only warn."""
+    print(f"=== Applying modded apps from {mod_dir} into {unpacked_root} ===")
+    if not mod_dir.is_dir():
+        print(f"  [warn] modded apps dir not found: {mod_dir}, skip\n")
+        return
+    applied, missing = 0, 0
+    for part in sorted(mod_dir.iterdir()):
+        if part.is_symlink() or not part.is_dir():
+            print(f"  [warn, skip] unexpected top-level entry: {part.name}")
+            missing += 1
+            continue
+        dest = unpacked_root / part.name
+        if not dest.is_dir():
+            print(f"  [missing, skip] no such partition in target tree: {part.name}/")
+            missing += 1
+            continue
+        copy_tree_into(part, dest)
+        applied += 1
+    print(f"Modded apps done: applied {applied} partition(s), skipped {missing}.\n")
 
 
 def flatten_pangu_system(product_dir: Path) -> None:
@@ -1710,10 +1815,17 @@ def main() -> None:
         # rebuild bake the trees into images). Port only — mod has no donors.
         apply_donor_files(UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR)
 
+        # Step 4c2: Overlay the modded-apps set onto the port tree (modded
+        # files replace stock/port ones; runs before debloat so oat strips
+        # and deletions apply to the final content).
+        apply_modded_apps(mod_dir, UNPACKED_PORT_DIR)
+
         # Tree carrying the build forward (debloat + DSV + rebuild source).
         patch_root = UNPACKED_PORT_DIR
     else:
         unpack_partitions(MOD_PARTITIONS, EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
+        # Same overlay onto the single stock tree (before debloat).
+        apply_modded_apps(mod_dir, UNPACKED_STOCK_DIR)
         patch_root = UNPACKED_STOCK_DIR
 
     # Step 4d: Debloat the unpacked trees + patch vendor fstab (AVB off, rw).
