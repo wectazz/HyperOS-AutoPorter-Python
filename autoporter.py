@@ -1534,12 +1534,16 @@ def repack_super_image(
 
             partition_args.extend([
                 "--partition",
-                f"{part_name}_a:readonly:{aligned_size}:{group_a}",
+                # attr "none" (not "readonly"): matches stock VAB layout and
+                # what UnpackerSuper/UKA packs — "readonly" is for retrofit
+                # devices; it changes nothing for full-super flashing but
+                # breaks parity with stock and on-device tooling.
+                f"{part_name}_a:none:{aligned_size}:{group_a}",
                 "--image",
                 f"{part_name}_a={img_path}",
                 # Empty _b slot placeholder: size 0, no --image on purpose
                 "--partition",
-                f"{part_name}_b:readonly:0:{group_b}",
+                f"{part_name}_b:none:0:{group_b}",
             ])
 
     # Tight packing: groups fit the partitions exactly, super weighs what
