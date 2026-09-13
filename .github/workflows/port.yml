@@ -3,6 +3,14 @@ name: HyperOS AutoPorter Workflow
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Build mode (port = stock+port mix, mod = stock-only modification)'
+        required: true
+        default: 'port'
+        type: choice
+        options:
+          - port
+          - mod
       hyper_version:
         description: 'HyperOS version (selects modded apps set)'
         required: true
@@ -96,11 +104,11 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          python -u autoporter.py --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }}
+          python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }}
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: package-${{ inputs.hyper_version }}-${{ inputs.package_type }}
-          path: HyperOS-port-duchamp-*.zip
+          name: package-${{ inputs.mode }}-${{ inputs.hyper_version }}-${{ inputs.package_type }}
+          path: HyperOS-*-duchamp-*.zip
           if-no-files-found: error

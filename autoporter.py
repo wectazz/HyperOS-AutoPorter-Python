@@ -59,9 +59,20 @@ PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
 # Extra stock partitions: dumped + unpacked for reference/patching only,
 # NOT packed into super.img (super takes product/system_ext from the port)
 STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
+# Full stock partition set for --mode mod (stock-only modification, no port):
+# every dynamic partition comes from STOCK_URL (device's own firmware).
+# Order mirrors the port-mode super layout (stock slots first, then the rest),
+# so mod and port super.img have the same partition order.
+MOD_PARTITIONS = STOCK_PARTITIONS + [
+    p for p in PORT_PARTITIONS if p not in STOCK_PARTITIONS
+] + [
+    p for p in STOCK_EXTRA_PARTITIONS
+    if p not in STOCK_PARTITIONS and p not in PORT_PARTITIONS
+]
 
-# Extra files taken from the port OTA zip (before it is deleted) for the
-# final flashable package: recovery META-INF descriptor of the port build
+# Extra files taken from the OTA zip (before it is deleted) for the
+# final flashable package: recovery META-INF descriptor of the build.
+# Port mode takes them from the port OTA, mod mode from the stock OTA.
 PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metadata.pb"]
 
 # Smali patching (signature-check neutering -> XdConfig). Applied to jars from
@@ -200,6 +211,12 @@ DONOR_DIR_FILES = [
         "com.android.vndk.v31.apex",
         "com.android.vndk.v33.apex",
         "com.android.vndk.v34.apex",
+    ]),
+    ("product/overlay", "product/overlay", [
+        "AospFrameworkResOverlay.apk",
+        "DevicesAndroidOverlay.apk",
+        "DevicesOverlay.apk",
+        "MiuiFrameworkResOverlay.apk",
     ]),
 ]
 
@@ -749,8 +766,9 @@ def flatten_pangu_system(product_dir: Path) -> None:
 
 def apply_donor_files(stock_root: Path, port_root: Path) -> None:
     """Copy donor blobs from the unpacked stock trees into the unpacked port
-    trees (device_features, displayconfig, vndk/compos APEXes). Missing
-    sources only warn — OTAs differ between builds."""
+    trees (device_features, displayconfig, product overlays, vndk/compos
+    APEXes). Port mode only — mod mode skips donors entirely (full stock).
+    Missing sources only warn — OTAs differ between builds."""
     print("=== Copying donor files (stock -> port) ===")
     copied, missing = 0, 0
     for src_rel, dst_rel in DONOR_FILES:
@@ -804,8 +822,9 @@ def apply_debloat_entries(unpacked_root: Path, entries: List[str], label: str) -
 
 
 def apply_debloat(unpacked_root: Path, version: str) -> None:
-    """Delete the debloat list entries for a HyperOS version from the unpacked
-    port tree (plus the init.miui.mi_ext.rc file, removed for every version)."""
+    """Delete the debloat list entries for a HyperOS version from the target
+    unpacked tree (port tree in port mode, stock tree in mod mode), plus the
+    init.miui.mi_ext.rc file, removed for every version."""
     apply_debloat_entries(unpacked_root,
                           list(DEBLOAT.get(version, [])) + DEBLOAT_COMMON_FILES,
                           f"'{version}'")
@@ -1345,14 +1364,18 @@ def rebuild_partition_images(partitions: List[str], unpacked_root: Path, img_dir
 
 
 def repack_super_image(
-    stock_dir: Path, port_dir: Path, output_super_img: Path
+    stock_dir: Path, port_dir: Path | None, output_super_img: Path,
+    mod_partitions: List[str] | None = None,
 ) -> None:
     """Pack extracted dynamic partitions into super.img using lpmake with Virtual A/B support.
 
-    Stock images come from stock_dir (STOCK_PARTITIONS), port images from
-    port_dir (PORT_PARTITIONS). Each partition is added twice: `<name>_a`
-    with the real image and `<name>_b` as an empty (0-byte) placeholder
-    in the second slot group, as stock Virtual A/B super images do.
+    Port mode (mod_partitions=None): stock images come from stock_dir
+    (STOCK_PARTITIONS), port images from port_dir (PORT_PARTITIONS).
+    Mod mode (mod_partitions given): every image comes from stock_dir
+    (full stock firmware, port_dir unused).
+    Each partition is added twice: `<name>_a` with the real image and
+    `<name>_b` as an empty (0-byte) placeholder in the second slot group,
+    as stock Virtual A/B super images do.
     """
     print("=== Step 6: Packing partitions into super.img ===")
 
@@ -1363,7 +1386,13 @@ def repack_super_image(
     partition_args = []
     total_size = 0
 
-    for img_dir, names in ((stock_dir, STOCK_PARTITIONS), (port_dir, PORT_PARTITIONS)):
+    if mod_partitions is not None:
+        sources: list = [(stock_dir, mod_partitions)]
+    else:
+        if port_dir is None:
+            raise ValueError("port_dir is required in port mode")
+        sources = [(stock_dir, STOCK_PARTITIONS), (port_dir, PORT_PARTITIONS)]
+    for img_dir, names in sources:
         for part_name in names:
             img_path = img_dir / f"{part_name}.img"
             if not img_path.exists():
@@ -1423,7 +1452,7 @@ def repack_super_image(
     # lpmake itself reports this only as a cryptic
     # `sparse_file_write failed (error code -22)`.
     print("Partition images for super:")
-    for img_dir, names in ((stock_dir, STOCK_PARTITIONS), (port_dir, PORT_PARTITIONS)):
+    for img_dir, names in sources:
         for part_name in names:
             img_path = img_dir / f"{part_name}.img"
             print(f"  {part_name}_a: {img_path.stat().st_size} bytes ({img_path})")
@@ -1522,7 +1551,7 @@ def assemble_package(
     split into images/super.img.0..53 (as the install scripts expect).
 
     package_type "universal" keeps META-INF (recovery updater-script +
-    update-binary AND port metadata) so the ZIP flashes in TWRP/OrangeFox
+    update-binary AND OTA metadata) so the ZIP flashes in TWRP/OrangeFox
     and works via fastboot scripts after unzipping. "fastboot-only" drops
     the whole META-INF dir (recovery flashing disabled on purpose).
     """
@@ -1546,9 +1575,9 @@ def assemble_package(
         for meta_name in ("metadata", "metadata.pb"):
             src = meta_dir / "META-INF/com/android" / meta_name
             if not src.exists():
-                raise FileNotFoundError(f"Missing port META-INF file: {src}")
+                raise FileNotFoundError(f"Missing OTA META-INF file: {src}")
             shutil.copy2(src, package_dir / "META-INF/com/android" / meta_name)
-        print("Port META-INF (metadata, metadata.pb) installed.")
+        print("OTA META-INF (metadata, metadata.pb) installed.")
 
     split_file(super_img, package_dir / "images", SUPER_SPLIT_PARTS, "super.img.")
     print(f"Flashable package ready: {package_dir}\n")
@@ -1582,6 +1611,14 @@ def create_recovery_zip(package_dir: Path, output_zip: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="HyperOS AutoPorter")
     parser.add_argument(
+        "--mode",
+        choices=["port", "mod"],
+        default="port",
+        help="Build mode: 'port' mixes stock + port OTAs (device port), "
+             "'mod' modifies the full stock firmware only, no donor files "
+             "(default: port)",
+    )
+    parser.add_argument(
         "--hyper-version",
         choices=sorted(MODDED_APPS),
         default="hos4",
@@ -1598,7 +1635,7 @@ def main() -> None:
         "--debloat",
         choices=["auto", "hos3", "hos4", "none"],
         default="auto",
-        help="Debloat list to apply to the unpacked port tree: 'auto' uses the "
+        help="Debloat list to apply to the target unpacked tree: 'auto' uses the "
              "--hyper-version list, 'none' skips debloating (default: auto)",
     )
     parser.add_argument(
@@ -1629,7 +1666,8 @@ def main() -> None:
         help="Free megabytes to keep in each ext4 RW partition (default: 150)",
     )
     args = parser.parse_args()
-    print(f"Starting HyperOS AutoPorter Workflow (HyperOS version: {args.hyper_version}, "
+    print(f"Starting HyperOS AutoPorter Workflow (mode: {args.mode}, "
+          f"HyperOS version: {args.hyper_version}, "
           f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
           f"decrypt-data: {args.decrypt_data}, ext4-rw: {args.ext4_rw}, "
           f"ext4-free: {args.ext4_free_mb}MB)...\n")
@@ -1642,34 +1680,55 @@ def main() -> None:
     download_and_extract_gdrive_mod(gdrive_url, mod_dir, mod_name)
 
     # Step 3: Download Stock & Port Firmwares with Strict Memory Cleanups.
-    # Separate output dirs: stock extras (product/system_ext) share names
-    # with port partitions and would otherwise overwrite each other.
-    process_firmware(STOCK_URL, "stock_duchamp",
-                     STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS, EXTRACTED_STOCK_DIR)
-    process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_PORT_DIR,
-                     extra_files=PORT_META_FILES, extra_dir=PORT_META_DIR)
+    # Port mode uses separate output dirs: stock extras (product/system_ext)
+    # share names with port partitions and would otherwise overwrite each
+    # other. Mod mode takes the full stock firmware only (its own META-INF
+    # feeds the package); no port OTA is downloaded.
+    if args.mode == "port":
+        process_firmware(STOCK_URL, "stock_duchamp",
+                         STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS, EXTRACTED_STOCK_DIR)
+        process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_PORT_DIR,
+                         extra_files=PORT_META_FILES, extra_dir=PORT_META_DIR)
+    else:
+        process_firmware(STOCK_URL, "stock_duchamp", MOD_PARTITIONS,
+                         EXTRACTED_STOCK_DIR,
+                         extra_files=PORT_META_FILES, extra_dir=PORT_META_DIR)
 
-    # Step 4: Unpack partition images for patching (stock + port)
-    unpack_partitions(STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS,
-                      EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
-    unpack_partitions(PORT_PARTITIONS, EXTRACTED_PORT_DIR, UNPACKED_PORT_DIR)
+    # Step 4: Unpack partition images for patching.
+    # Port mode: stock (+ extras, donors) + port trees. Mod mode: the full
+    # stock tree only.
+    if args.mode == "port":
+        unpack_partitions(STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS,
+                          EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
+        unpack_partitions(PORT_PARTITIONS, EXTRACTED_PORT_DIR, UNPACKED_PORT_DIR)
 
-    # Step 4b: Flatten port product nesting (pangu/system -> product root) so
-    # debloat paths and the rebuild see the final flat layout.
-    flatten_pangu_system(UNPACKED_PORT_DIR / "product")
+        # Step 4b: Flatten port product nesting (pangu/system -> product root) so
+        # debloat paths and the rebuild see the final flat layout. Port only.
+        flatten_pangu_system(UNPACKED_PORT_DIR / "product")
 
-    # Step 4c: Copy stock donor blobs into the port tree (before debloat and
-    # rebuild bake the trees into images)
-    apply_donor_files(UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR)
+        # Step 4c: Copy stock donor blobs into the port tree (before debloat and
+        # rebuild bake the trees into images). Port only — mod has no donors.
+        apply_donor_files(UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR)
+
+        # Tree carrying the build forward (debloat + DSV + rebuild source).
+        patch_root = UNPACKED_PORT_DIR
+    else:
+        unpack_partitions(MOD_PARTITIONS, EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
+        patch_root = UNPACKED_STOCK_DIR
 
     # Step 4d: Debloat the unpacked trees + patch vendor fstab (AVB off, rw).
-    # Fstab patching is not debloat-gated (functional, not deletions); only the
+    # Port mode: DEBLOAT onto the port tree, STOCK_DEBLOAT onto the stock
+    # tree. Mod mode: both lists onto the single stock tree. Fstab patching
+    # is not debloat-gated (functional, not deletions); only the
     # fileencryption rename follows --decrypt-data. Runs before the rebuild.
     debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
     if debloat_version == "none":
         print("Debloat skipped (--debloat none).\n")
-    else:
+    elif args.mode == "port":
         apply_debloat(UNPACKED_PORT_DIR, debloat_version)
+        apply_stock_debloat(UNPACKED_STOCK_DIR)
+    else:
+        apply_debloat(UNPACKED_STOCK_DIR, debloat_version)
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
 
@@ -1677,14 +1736,14 @@ def main() -> None:
     if args.dsv == "yes":
         # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig).
         patch_jar_smali(
-            UNPACKED_PORT_DIR / "system" / "system" / "framework" / "framework.jar",
+            patch_root / "system" / "system" / "framework" / "framework.jar",
             "framework", FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
             BASE_DIR / "smali_work" / "framework",
         )
         # Step 4f: Smali-patch miui-services.jar (signature checks -> void,
         # secure-flag bypass at method start).
         patch_jar_smali(
-            UNPACKED_PORT_DIR / "system_ext" / "framework" / "miui-services.jar",
+            patch_root / "system_ext" / "framework" / "miui-services.jar",
             "miui-services", MIUI_SERVICES_METHOD_PATCHES, [],
             BASE_DIR / "smali_work" / "miui-services",
             start_patches=MIUI_SERVICES_START_PATCHES,
@@ -1695,7 +1754,7 @@ def main() -> None:
         # NOTE: services.jar lives in system/system (AOSP location), NOT in
         # system_ext like miui-services.jar (proven by CI: absent under system_ext).
         patch_jar_smali(
-            UNPACKED_PORT_DIR / "system" / "system" / "framework" / "services.jar",
+            patch_root / "system" / "system" / "framework" / "services.jar",
             "services", SERVICES_METHOD_PATCHES, [],
             BASE_DIR / "smali_work" / "services",
             start_patches=SERVICES_START_PATCHES,
@@ -1705,20 +1764,25 @@ def main() -> None:
         print("DSV smali patching skipped (--dsv no).\n")
 
     # Step 5: Rebuild partition images from (patched) unpacked trees.
-    # NOTE: stock product/system_ext are donors only (files are copied out of
-    # them into unpacked_port later) — never rebuilt, never packed into super.
-    # ext4_rw names can only match rebuilt partitions, so stock extras
-    # (same names as port ones) are never affected.
+    # Port mode NOTE: stock product/system_ext are donors only (files are
+    # copied out of them into unpacked_port later) — never rebuilt, never
+    # packed into super. ext4_rw names can only match rebuilt partitions, so
+    # stock extras (same names as port ones) are never affected.
+    # Mod mode: the full stock set is rebuilt from the single stock tree.
     ext4_rw = parse_ext4_rw(args.ext4_rw, sorted(set(STOCK_PARTITIONS
                                                        + STOCK_EXTRA_PARTITIONS
                                                        + PORT_PARTITIONS)))
     if ext4_rw:
         print(f"ext4 RW partitions: {sorted(ext4_rw)} "
               f"(+{args.ext4_free_mb}MB free each)\n")
-    rebuild_partition_images(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR,
-                             ext4_rw, args.ext4_free_mb)
-    rebuild_partition_images(STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR,
-                             ext4_rw, args.ext4_free_mb)
+    if args.mode == "port":
+        rebuild_partition_images(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR,
+                                 ext4_rw, args.ext4_free_mb)
+        rebuild_partition_images(STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR,
+                                 ext4_rw, args.ext4_free_mb)
+    else:
+        rebuild_partition_images(MOD_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR,
+                                 ext4_rw, args.ext4_free_mb)
 
     # Step 5b: Drop unpacked trees — the rebuild is done and nothing below
     # uses them; lpmake needs ~super_size bytes free right after this.
@@ -1729,18 +1793,24 @@ def main() -> None:
 
     # Step 6: Repack partitions into super.img
     super_output = BASE_DIR / "super.img"
-    repack_super_image(EXTRACTED_STOCK_DIR, EXTRACTED_PORT_DIR, super_output)
+    if args.mode == "port":
+        repack_super_image(EXTRACTED_STOCK_DIR, EXTRACTED_PORT_DIR, super_output)
+    else:
+        repack_super_image(EXTRACTED_STOCK_DIR, None, super_output,
+                           mod_partitions=MOD_PARTITIONS)
 
     # Step 7: Assemble the final flashable package (template + super chunks,
     # with or without META-INF depending on package type)
     package_dir = assemble_package(super_output, PORT_META_DIR,
                                    package_type=args.package_type)
 
-    # Step 8: Pack it into a ZIP (max compression). The name marks
-    # fastboot-only builds; the universal ZIP is recovery-flashable.
+    # Step 8: Pack it into a ZIP (max compression). The name marks the mode
+    # (port = stock+port mix, mod = stock-only) and fastboot-only builds;
+    # the universal ZIP is recovery-flashable.
+    mode_prefix = "port" if args.mode == "port" else "mod"
     zip_suffix = "" if args.package_type == "universal" else f"-{args.package_type}"
     create_recovery_zip(package_dir,
-                        BASE_DIR / f"HyperOS-port-duchamp-{args.hyper_version}{zip_suffix}.zip")
+                        BASE_DIR / f"HyperOS-{mode_prefix}-duchamp-{args.hyper_version}{zip_suffix}.zip")
 
     print("HyperOS AutoPorter completed successfully!")
 
