@@ -237,7 +237,6 @@ DEBLOAT_HOS3 = [
     "product/app/MIS",
     "product/app/MITSMClient",
     "product/app/MIUIAiasstService",
-    "product/app/MIUIPersonalAssistantPhoneOS3",
     "product/app/MIUIgreenguard",
     "product/app/MIUISecurityInputMethod",
     "product/app/MIUISuperMarket",
@@ -281,6 +280,7 @@ DEBLOAT_HOS3 = [
     "product/priv-app/MiniGameService",
     "product/priv-app/MirrorOS3",
     "product/priv-app/MIUIBrowser",
+    "product/priv-app/MIUIPersonalAssistantPhoneOS3",
     "product/priv-app/MIUIQuickSearchBox",
     "product/priv-app/MIUIYellowPage",
     # system_ext/app
