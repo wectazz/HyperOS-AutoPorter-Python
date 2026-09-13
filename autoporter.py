@@ -1512,9 +1512,11 @@ def _regexify_context_path(path: str) -> str:
 
 
 # Safe grammars for ROM file_contexts lines (anything else is dropped +
-# logged: it can only ever break the selabel parse or the lookup, while
-# the `$` tiers below keep every path covered regardless).
-_CONTEXT_PATH_RE = re.compile(r"^[A-Za-z0-9/_.\-+*?()|^$\\]+$")
+# logged: it can only ever break the selinux parse or the lookup, while
+# the `$` tiers below keep every path covered regardless). The path class
+# deliberately allows alternations `(a|b)`, classes `[^/]`/`[0-9]` and `@`
+# (HAL service names) — all standard in real vendor policy, proven by CI.
+_CONTEXT_PATH_RE = re.compile(r"^[A-Za-z0-9/_.\-+*?()|^$\\\[\]@]+$")
 _CONTEXT_CTX_RE = re.compile(r"^u:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+"
                              r"(?::[A-Za-z0-9_.,:=\-]+)?$")
 _CONTEXT_KINDS = {"-d", "-f", "-l", "-s", "-b", "-c", "-p", "--"}
