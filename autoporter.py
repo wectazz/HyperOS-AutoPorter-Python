@@ -1933,6 +1933,13 @@ def repack_super_image(
             img_size = img_path.stat().st_size
             # Align partition size to 4096 bytes block size
             aligned_size = ((img_size + 4095) // 4096) * 4096
+            if aligned_size != img_size:
+                # Pad the file itself (sparse-safe hole, no disk cost) so
+                # partition size == file size: lpmake fails reading past EOF
+                # when they differ under explicit device alignment.
+                with open(img_path, "ab") as f:
+                    f.truncate(aligned_size)
+                img_size = aligned_size
             total_size += aligned_size
 
             partition_args.extend([
@@ -1953,7 +1960,9 @@ def repack_super_image(
     # the images weigh plus the lpmake metadata minimum only. No snapshot
     # padding, no GiB rounding. Both slot groups get the same size (mirrors
     # stock layout); with --virtual-ab the groups may overcommit the
-    # physical super size via copy-on-write.
+    # physical super size via copy-on-write. Explicit 4096 device alignment:
+    # without it lpmake pads partitions to ~1MB each and tight groups fail
+    # with exit 70 on the last partition (proven locally).
     group_size = total_size
     super_size = total_size + SUPER_METADATA_RESERVE_MB * 1024 * 1024
 
@@ -1967,7 +1976,7 @@ def repack_super_image(
         "3",
         "--virtual-ab",
         "--device",
-        f"super:{super_size}",
+        f"super:{super_size}:4096",
         "--group",
         f"{group_a}:{group_size}",
         "--group",
