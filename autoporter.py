@@ -1511,21 +1511,56 @@ def _regexify_context_path(path: str) -> str:
     return path + "(/.*)?"
 
 
+# Safe grammars for ROM file_contexts lines (anything else is dropped +
+# logged: it can only ever break the selabel parse or the lookup, while
+# the `$` tiers below keep every path covered regardless).
+_CONTEXT_PATH_RE = re.compile(r"^[A-Za-z0-9/_.\-+*?()|^$\\]+$")
+_CONTEXT_CTX_RE = re.compile(r"^u:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+"
+                             r"(?::[A-Za-z0-9_.,:=\-]+)?$")
+_CONTEXT_KINDS = {"-d", "-f", "-l", "-s", "-b", "-c", "-p", "--"}
+
+
+def _sanitize_context_line(line: str):
+    """Check a ROM file_contexts line against the safe grammar. Returns the
+    (possibly path-regexified) line, or None to drop it. Dropped lines only
+    lose a policy-specific label — the `$` tiers still cover the path."""
+    parts = line.split()
+    if len(parts) == 2:
+        path, ctx = parts
+        rest = ""
+    elif len(parts) == 3 and parts[1] in _CONTEXT_KINDS:
+        path, _, ctx = parts
+        rest = f" {parts[1]}"
+    else:
+        return None
+    if not _CONTEXT_PATH_RE.match(path):
+        return None
+    if not _CONTEXT_CTX_RE.match(ctx):
+        return None
+    return f"{_regexify_context_path(path)}{rest} {ctx}"
+
+
 def collect_file_contexts(part_name: str, tree_root: Path,
                           fallback_files: List[Path]) -> List[str]:
     """Assemble a file_contexts list for e2fsdroid: a `/` root entry, then
     the partition's own `etc/selinux/*_file_contexts`, then fallbacks
-    (plat, vendor — specific-first). Exact paths are converted to
-    `(/.*)?` pattern form: this lookup only matches patterns (proven).
-    ROM selinux files always carry broad self-coverage (`/<part>(/.*)?`,
-    otherwise the AOSP build itself would fail the same way); if coverage
-    is still incomplete, e2fsdroid fails fast naming the missing label —
-    loud and actionable, never silent. Returns [] when nothing but the
-    root entry was found (caller falls back to the legacy build)."""
+    (plat, vendor — specific-first). ROM lines pass an allowlist grammar
+    (safe path/context chars, optional known file-kind); anything else is
+    dropped and logged, since a single malformed line can fail lookups
+    with cryptic errors — dropped paths stay covered by the `$` tiers.
+    Exact paths are converted to `(/.*)?` pattern form: this lookup only
+    matches patterns (proven). ROM selinux files always carry broad
+    self-coverage (`/<part>(/.*)?`, otherwise the AOSP build itself would
+    fail the same way); if coverage is still incomplete, e2fsdroid fails
+    fast naming the missing label — loud and actionable, never silent.
+    Returns [] when nothing but the root entry was found (caller falls
+    back to the legacy build)."""
     lines = ["/ u:object_r:rootfs:s0"]
     seen = set(lines)
     own = sorted((tree_root / "etc" / "selinux").glob("*_file_contexts")) \
         if (tree_root / "etc" / "selinux").is_dir() else []
+    dropped: List[str] = []
+    n_dropped = 0
     for src in own + list(fallback_files):
         try:
             text = src.read_text()
@@ -1535,13 +1570,20 @@ def collect_file_contexts(part_name: str, tree_root: Path,
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            parts = line.split()
-            if len(parts) >= 2:
-                parts[0] = _regexify_context_path(parts[0])
-                line = " ".join(parts)
-            if line not in seen:
-                seen.add(line)
-                lines.append(line)
+            clean = _sanitize_context_line(line)
+            if clean is None:
+                n_dropped += 1
+                if len(dropped) < 20:
+                    dropped.append(f"{src.name}: {line[:120]}")
+                continue
+            if clean not in seen:
+                seen.add(clean)
+                lines.append(clean)
+    if n_dropped:
+        print(f"  [sanitize] dropped {n_dropped} non-conforming ROM line(s), "
+              f"covered by $ tiers instead:")
+        for d in dropped:
+            print(f"    dropped: {d}")
     return lines if len(lines) > 1 else []
 
 

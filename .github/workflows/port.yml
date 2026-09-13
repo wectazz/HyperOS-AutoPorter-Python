@@ -106,6 +106,18 @@ jobs:
         run: |
           python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }}
 
+      - name: Upload build sidecars (debug on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecars-${{ inputs.mode }}-${{ inputs.hyper_version }}
+          path: |
+            extracted_stock/*.fs_config
+            extracted_stock/*.file_contexts
+            extracted_port/*.fs_config
+            extracted_port/*.file_contexts
+          if-no-files-found: warn
+
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
         with:
