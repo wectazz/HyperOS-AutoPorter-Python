@@ -17,7 +17,6 @@ from typing import List
 
 import requests
 from tqdm import tqdm
-import gdown
 
 # Directory definitions
 BASE_DIR = Path(__file__).parent.resolve()
@@ -42,17 +41,20 @@ PORT_URL = (
     "OS4.0.0.12.XPTCNXM/chagall-ota_full-OS4.0.0.12.XPTCNXM-user-17.0-20bb2c4a3d.zip"
 )
 
-HOS3_GDRIVE_URL = (
-    "https://drive.google.com/file/d/1cVC1r_7RtrUHg6UIq8Wtdtgoi1lX2phO/view?usp=sharing"
+HOS3_MOD_URL = (
+    "https://github.com/wectazz/HyperOS-AutoPorter-Python/releases/download/"
+    "modded-apps/moddedapps_hos3.zip"
 )
-HOS4_GDRIVE_URL = (
-    "https://drive.google.com/file/d/10ySX6TCUqkDvvZPJ5HzYd53Eqeb5Aum5/view?usp=sharing"
+HOS4_MOD_URL = (
+    "https://github.com/wectazz/HyperOS-AutoPorter-Python/releases/download/"
+    "modded-apps/moddedapps_hos4.zip"
 )
 
-# Modded apps sets per HyperOS version: (gdrive_url, output_dir, archive_name)
+# Modded apps sets per HyperOS version: (download_url, output_dir, archive_name).
+# Hosted as release assets on GitHub (direct links, no auth, no quotas).
 MODDED_APPS = {
-    "hos3": (HOS3_GDRIVE_URL, MODDED_HOS3_DIR, "moddedapps_hos3"),
-    "hos4": (HOS4_GDRIVE_URL, MODDED_HOS4_DIR, "moddedapps_hos4"),
+    "hos3": (HOS3_MOD_URL, MODDED_HOS3_DIR, "moddedapps_hos3"),
+    "hos4": (HOS4_MOD_URL, MODDED_HOS4_DIR, "moddedapps_hos4"),
 }
 # Target Partition lists
 STOCK_PARTITIONS = ["odm", "vendor", "odm_dlkm", "system_dlkm", "vendor_dlkm"]
@@ -491,13 +493,13 @@ def download_file_with_progress(url: str, dest_path: Path) -> Path:
     return dest_path
 
 
-def download_and_extract_gdrive_mod(gdrive_url: str, output_dir: Path, name: str) -> None:
-    """Download and unpack Google Drive modded apps archives."""
+def download_and_extract_mod(mod_url: str, output_dir: Path, name: str) -> None:
+    """Download and unpack modded apps archives (direct link, requests)."""
     print(f"=== Downloading Modded Apps: {name} ===")
     archive_path = output_dir / f"{name}.zip"
 
-    # Download using gdown library API
-    gdown.download(url=gdrive_url, output=str(archive_path), quiet=False)
+    # Direct download with progress (same helper as firmware OTAs)
+    download_file_with_progress(mod_url, archive_path)
 
     if not archive_path.exists() or archive_path.stat().st_size == 0:
         raise RuntimeError(f"Failed to download modded apps archive for {name}")
@@ -2036,8 +2038,8 @@ def main() -> None:
     setup_tools()
 
     # Step 2: Download & Extract Modded Apps for the selected HyperOS version
-    gdrive_url, mod_dir, mod_name = MODDED_APPS[args.hyper_version]
-    download_and_extract_gdrive_mod(gdrive_url, mod_dir, mod_name)
+    mod_url, mod_dir, mod_name = MODDED_APPS[args.hyper_version]
+    download_and_extract_mod(mod_url, mod_dir, mod_name)
 
     # Step 3: Download Stock & Port Firmwares with Strict Memory Cleanups.
     # Port mode uses separate output dirs: stock extras (product/system_ext)
