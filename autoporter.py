@@ -43,7 +43,7 @@ PORT_URL = (
 )
 
 HOS3_GDRIVE_URL = (
-    "https://drive.google.com/file/d/1m8wWEUhEAOzirT6zefBtH8Bmm9ajDVVB/view?usp=sharing"
+    "https://drive.google.com/file/d/1cVC1r_7RtrUHg6UIq8Wtdtgoi1lX2phO/view?usp=sharing"
 )
 HOS4_GDRIVE_URL = (
     "https://drive.google.com/file/d/10ySX6TCUqkDvvZPJ5HzYd53Eqeb5Aum5/view?usp=sharing"
