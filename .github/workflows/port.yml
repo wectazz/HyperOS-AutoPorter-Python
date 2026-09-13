@@ -99,8 +99,7 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          sudo python -m pip install --upgrade pip
-          sudo pip install --break-system-packages -r requirements.txt
+          sudo python -m pip install --break-system-packages -r requirements.txt
 
       - name: Run AutoPorter
         run: |
