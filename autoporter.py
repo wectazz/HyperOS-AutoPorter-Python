@@ -10,6 +10,7 @@ import stat
 import struct
 import sys
 import shutil
+import tempfile
 import zipfile
 import subprocess
 from pathlib import Path
@@ -1988,21 +1989,81 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
 
 def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                     build_root: Path) -> None:
-    """Smali-patch one APK inside the build tree (patch_root, both modes):
-    APKs are zips with classes*.dex, so the jar patcher handles them as-is
-    (no dsv injection — the apk-* key has no dsv dir, skips gracefully).
-    Afterwards the oat/ dir next to the APK is dropped: dex was rebuilt, so
-    stale compiled code must not survive. Missing APK only warns.
-    NOTE: the rezip drops the APK signing block (v2/v3); v1 META-INF entries
-    survive as (stale) entries — DSV neuters the checks, same as the
-    modded-apps overlays."""
+    """Smali-patch one APK inside the build tree (patch_root, both modes)
+    via tools/apkeditor.jar (decode -> patch smali -> build back): full
+    decode with the internal dex lib (handles dex up to 042, unlike the
+    baksmali/smali jars), literal whole-file replaces like step 3e, then a
+    rebuild. Afterwards the oat/ dir next to the APK is dropped: dex was
+    rebuilt, so stale compiled code must not survive. Missing APK only warns.
+    The work dir is wiped afterwards (decodes are huge); entry-name sets must
+    match the original or the build fails fast.
+    NOTE: like the jar rezip, the rebuild refreshes signatures; DSV neuters
+    the checks, same as the modded-apps overlays."""
     apk_path = build_root / apk_rel
     if not apk_path.is_file():
         print(f"WARNING: {apk_rel} not found, skip APK smali patching.\n")
         return
-    patch_jar_smali(apk_path, f"apk-{tag}", [], [],
-                    BASE_DIR / "smali_work" / f"apk-{tag}",
-                    replace_patches=replace_patches)
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError("java not found: install a JRE for apkeditor (CI: default-jre-headless)")
+    apkeditor_jar = TOOLS_DIR / "apkeditor.jar"
+    if not apkeditor_jar.is_file():
+        raise RuntimeError(f"Missing tool jar: {apkeditor_jar}")
+    print(f"=== Smali-patching {apk_path.name} (apkeditor) ===")
+    with zipfile.ZipFile(apk_path) as zin:
+        orig_entries = {i.filename for i in zin.infolist()}
+    # Work dir on the system temp fs (NOT the repo: /mnt/d-style mounts are
+    # far too slow for thousand-file decodes, and leftovers would pollute
+    # the repo when a run dies).
+    work_root = Path(tempfile.mkdtemp(prefix=f"apkeditor-{tag}-"))
+    try:
+        # 1. full decode (apkeditor exits 0 even on failure — verify output).
+        run_logged([java, "-jar", str(apkeditor_jar), "d",
+                    "-i", str(apk_path), "-o", str(work_root), "-f"],
+                   f"apkeditor decode {apk_path.name}")
+        smali_root = work_root / "smali"
+        dex_dirs = sorted([d for d in smali_root.iterdir() if d.is_dir()],
+                          key=lambda d: d.name) if smali_root.is_dir() else []
+        if not dex_dirs or not any(d.rglob("*.smali") for d in dex_dirs):
+            raise RuntimeError(f"apkeditor produced no smali for {apk_path.name} "
+                               f"(it exits 0 even on failure)")
+        # 2. literal whole-file replaces (same semantics as step 3e).
+        for basenames, old, new in replace_patches:
+            for base_name in basenames:
+                found = [p for d in dex_dirs for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    text = path.read_text()
+                    count = text.count(old)
+                    if not count:
+                        print(f"  [warn] no target string in {path.relative_to(work_root)}")
+                        continue
+                    path.write_text(text.replace(old, new))
+                    print(f"  patched {path.name}: {count}x replace")
+        # 3. rebuild into a temp file (atomic replace keeps the old APK on
+        # failure).
+        tmp = apk_path.with_name(apk_path.name + ".new")
+        if tmp.exists():
+            tmp.unlink()
+        run_logged([java, "-jar", str(apkeditor_jar), "b",
+                    "-i", str(work_root), "-o", str(tmp), "-f"],
+                   f"apkeditor build {apk_path.name}")
+        if not tmp.is_file() or tmp.stat().st_size == 0:
+            raise RuntimeError(f"apkeditor produced no output for {apk_path.name}")
+        with zipfile.ZipFile(tmp) as zout:
+            new_entries = {i.filename for i in zout.infolist()}
+        if new_entries != orig_entries:
+            raise RuntimeError(
+                f"apkeditor changed the entry set of {apk_path.name}: "
+                f"lost {sorted(orig_entries - new_entries)[:5]}, "
+                f"added {sorted(new_entries - orig_entries)[:5]}")
+        os.replace(tmp, apk_path)
+        print(f"APK smali patching done: {apk_path.name} "
+              f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
     oat = apk_path.parent / "oat"
     if oat.is_dir() and not oat.is_symlink():
         shutil.rmtree(oat)
