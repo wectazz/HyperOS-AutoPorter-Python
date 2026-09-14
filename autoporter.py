@@ -215,7 +215,7 @@ MI_EXT_RADIO_5G_KEY = "ro.vendor.radio.5g"
 # "TengeOS | OS4.0.0.12.XPTCNXM"); already-prefixed values are left alone.
 MI_EXT_VERSION_INCR_KEY = "ro.mi.os.version.incremental"
 MI_EXT_VERSION_PREFIX = "TengeOS | "
-# Moved out of mi_ext/etc/build.prop into product/build.prop.
+# Moved out of mi_ext/etc/build.prop into product/etc/build.prop.
 MI_EXT_UNINSTALL_FLAG = "ro.miui.support.system.app.uninstall.v2"
 # (mi_ext/product/... source, product/... dest, hyper-version gate or None).
 # NOTE: the on-device name is platform-miui-uninstall.xml.
@@ -335,10 +335,10 @@ def signature_patch_lists(dsv: str) -> tuple:
     return ([], [], [], [])
 
 # build.prop tweaks (step 4c4, both modes, on patch_root): density + custom
-# prop blocks + locale/host normalization. product/build.prop is the
-# partition-root file (NOT product/etc/build.prop); system props live in the
-# nested system/system/build.prop (SAR layout, like the jars).
-PRODUCT_BUILD_PROP = "product/build.prop"
+# prop blocks + locale/host normalization. Fixed paths: product props live
+# in product/etc/build.prop, system props in nested system/system/build.prop
+# (SAR layout, like the jars) — both trees alike.
+PRODUCT_BUILD_PROP = "product/etc/build.prop"
 SYSTEM_BUILD_PROP = "system/system/build.prop"
 DENSITY_PROP_KEYS = ["persist.miui.density_v2", "ro.sf.lcd_density"]
 PRODUCT_PROP_APPEND = [
@@ -1279,12 +1279,12 @@ def _patch_mi_ext_build_prop(build_root: Path) -> None:
     if flag_value is None:
         print(f"  [missing, skip] {MI_EXT_UNINSTALL_FLAG} flag (not in mi_ext build.prop)")
         return
-    dest_prop = build_root / "product" / "build.prop"
+    dest_prop = build_root / "product" / "etc" / "build.prop"
     if not dest_prop.is_file():
-        print("  [missing, skip] product/build.prop (flag has nowhere to go)")
+        print("  [missing, skip] product/etc/build.prop (flag has nowhere to go)")
         return
     _upsert_prop(dest_prop, MI_EXT_UNINSTALL_FLAG, flag_value)
-    print(f"  moved {MI_EXT_UNINSTALL_FLAG}={flag_value} -> product/build.prop")
+    print(f"  moved {MI_EXT_UNINSTALL_FLAG}={flag_value} -> product/etc/build.prop")
 
 
 def apply_mi_ext_tweaks(build_root: Path, hyper_version: str) -> None:
@@ -2821,7 +2821,7 @@ def main() -> None:
         "--density",
         type=int,
         default=480,
-        help="Screen density written to product/build.prop "
+        help="Screen density written to product/etc/build.prop "
              "(persist.miui.density_v2 + ro.sf.lcd_density) (default: 480)",
     )
     parser.add_argument(
