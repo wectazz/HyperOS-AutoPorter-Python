@@ -431,7 +431,7 @@ DEBLOAT_HOS3 = [
     "product/data-app/Health",
     "product/data-app/iFlytekIME",
     "product/data-app/MIGalleryLockscreen",
-    "product/data-app/MIPay",
+    "product/data-app/MIpay",
     "product/data-app/MiRadio",
     "product/data-app/MIService",
     "product/data-app/MiShop",
@@ -1519,13 +1519,46 @@ def apply_vibrator_fix(stock_root: Path) -> None:
     print()
 
 
+def _resolve_insensitive(root: Path, rel: str) -> Path:
+    """Resolve rel under root, matching each path component case-sensitively
+    first, then case-insensitively (OEMs shuffle capitalization like
+    MIPay/MIpay between builds). Returns None when a component matches
+    nothing."""
+    cur = root
+    for part in Path(rel).parts:
+        if not cur.is_dir():
+            return None
+        match = cur / part
+        if not (match.exists() or match.is_symlink()):
+            match = None
+            try:
+                lowered = part.lower()
+                for child in cur.iterdir():
+                    if child.name.lower() == lowered:
+                        match = child
+                        break
+            except OSError:
+                return None
+            if match is None:
+                return None
+        cur = match
+    return cur
+
+
 def apply_debloat_entries(unpacked_root: Path, entries: List[str], label: str) -> None:
-    """Delete entries from an unpacked tree. Missing entries only warn —
-    OTAs differ between builds."""
+    """Delete entries from an unpacked tree (matched case-insensitively per
+    component). Missing entries only warn — OTAs differ between builds."""
     print(f"=== Applying debloat list {label} ({len(entries)} entries) ===")
     removed, missing = 0, 0
     for rel in entries:
-        target = unpacked_root / rel
+        target = _resolve_insensitive(unpacked_root, rel)
+        if target is None:
+            print(f"  [missing, skip] {rel}")
+            missing += 1
+            continue
+        if target != unpacked_root / rel:
+            print(f"  [case] {rel} -> "
+                  f"{target.relative_to(unpacked_root).as_posix()}")
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
             removed += 1
