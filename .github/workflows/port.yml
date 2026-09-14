@@ -59,7 +59,7 @@ on:
         default: 480
         type: number
       aod_fullscreen:
-        description: 'Fullscreen AOD (support_aod_fullscreen in duchamp.xml)'
+        description: 'Fullscreen AOD (support_aod_fullscreen in duchamp.xml + NoSuchElementException catch in miui-services.jar)'
         required: true
         default: 'true'
         type: choice

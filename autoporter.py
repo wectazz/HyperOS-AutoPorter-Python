@@ -307,9 +307,52 @@ DRM_BROADCAST_OLD = (
 MIUI_SERVICES_DRM_REPLACE_PATCHES = [
     (["ActivityManagerServiceImpl.smali"], DRM_BROADCAST_OLD, ""),
 ]
+# Fullscreen-AOD catch patch (step 4f, miui-services.jar only, gated by
+# --aod-fullscreen like the duchamp.xml flag — NOT dsv-gated, it's
+# functional). Tuples: (target basenames, previous exception, anchor
+# exception, new exception). After every `.catch <anchor>` whose previous
+# .catch line is `<prev>` with the same try range + handler, a
+# `.catch <new>` with that same range + handler is inserted (same indent).
+# Try/catch labels are captured from the file itself (e.g. try_start_3f /
+# catch_49), so hos3/hos4 numbering differences don't matter. The prev-line
+# guard keeps unrelated SecurityException catches elsewhere untouched;
+# "*.smali" scans every decompiled dex dir since the owning class isn't
+# pinned. Idempotent: an already-present identical line is not duplicated.
+MIUI_SERVICES_AOD_CATCH_PATCHES = [
+    (["*.smali"], "Landroid/os/RemoteException;",
+     "Ljava/lang/SecurityException;", "Ljava/util/NoSuchElementException;"),
+]
 # (apk/jar-relative rules built per target, basenames + both pkg forms).
 MIUIFREQUENTPHRASE_APK = "product/app/MIUIFrequentPhrase/MIUIFrequentPhrase.apk"
 SETTINGS_APK = "system_ext/priv-app/Settings/Settings.apk"
+
+# init.rc tweak (step 4c3c, both modes, on patch_root): appended once to the
+# end of system/system/etc/init/hw/init.rc (SAR-nested, like the jars and
+# system build.prop). Starts animationfix on boot_completed to force the
+# deviceLevelList setting.
+INIT_RC = "system/system/etc/init/hw/init.rc"
+INIT_RC_APPEND = [
+    "on property:sys.boot_completed=1",
+    "   start animationfix",
+    "",
+    "service animationfix /system/bin/sh -c \"settings put system deviceLevelList v:1,c:3,g:3\"",
+    "    seclabel u:r:shell:s0",
+    "    user root",
+    "    oneshot",
+    "    disabled",
+]
+INIT_RC_GUARD = "service animationfix"
+# About-phone overlay (step 4c3b, both modes, on patch_root): committed
+# about_phone_description/duchamp/ files copied into the build tree.
+# (source rel under the overlay dir, dest rel under patch_root,
+# hyper-version gate or None). COPY, not move — the overlay is repo content.
+ABOUT_PHONE_DIR = BASE_DIR / "about_phone_description" / "duchamp"
+ABOUT_PHONE_MOVES = [
+    ("product/etc/device_info.json",
+     "product/etc/device_info.json", None),
+    ("system/system/priv-app/HTMLViewer/HTMLViewer.apk",
+     "system/system/priv-app/HTMLViewer/HTMLViewer.apk", "hos3"),
+]
 
 
 def keyboard_replace_rules(basenames: List[str]):
@@ -1339,6 +1382,72 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str) -> None:
     print()
 
 
+def apply_about_phone_description(build_root: Path, hyper_version: str) -> None:
+    """Copy the committed about_phone_description/duchamp/ overlay into the
+    build tree (patch_root, both modes): device_info.json -> product/etc/
+    always, HTMLViewer.apk -> system/system/priv-app/ only when hyper_version
+    is hos3. Copy (not move) with xattrs/symlinks via copy_file_preserve();
+    existing dests are replaced. Missing sources only warn."""
+    print("=== Applying about_phone_description overlay ===")
+    if not ABOUT_PHONE_DIR.is_dir():
+        print(f"  [warn] overlay dir not found: {ABOUT_PHONE_DIR}, skip\n")
+        return
+    for src_rel, dst_rel, gate in ABOUT_PHONE_MOVES:
+        if gate is not None and gate != hyper_version:
+            print(f"  [skip] {src_rel} (needs {gate})")
+            continue
+        src, dst = ABOUT_PHONE_DIR / src_rel, build_root / dst_rel
+        if not (src.is_file() or src.is_symlink()):
+            print(f"  [missing, skip] {src_rel}")
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_symlink():
+            if dst.is_dir() and not dst.is_symlink():
+                shutil.rmtree(dst)
+            elif dst.exists() or dst.is_symlink():
+                dst.unlink()
+            os.symlink(os.readlink(src), dst)
+            try:
+                for name in os.listxattr(src, follow_symlinks=False):
+                    try:
+                        os.setxattr(dst, name,
+                                    os.getxattr(src, name, follow_symlinks=False),
+                                    follow_symlinks=False)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+        else:
+            if dst.is_dir() and not dst.is_symlink():
+                shutil.rmtree(dst)
+            elif dst.is_symlink() or dst.exists():
+                dst.unlink()
+            copy_file_preserve(src, dst)
+        print(f"  copied {src_rel} -> {dst_rel}")
+    print()
+
+
+def apply_init_rc_tweak(build_root: Path) -> None:
+    """Append the animationfix block once to the end of system/system/etc/
+    init/hw/init.rc on the build tree (patch_root, both modes). Idempotent:
+    skipped when the guard line is already present. Missing file only
+    warns."""
+    print("=== Applying init.rc tweak ===")
+    rc = build_root / INIT_RC
+    if not rc.is_file():
+        print(f"  [missing, skip] {INIT_RC}\n")
+        return
+    text = rc.read_text()
+    if INIT_RC_GUARD in text:
+        print(f"  already present, skip {INIT_RC}\n")
+        return
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += "\n".join(INIT_RC_APPEND) + "\n"
+    rc.write_text(text)
+    print(f"  appended animationfix block to {INIT_RC}\n")
+
+
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
     """Upsert entries into a build.prop file, in order: key=value lines
     replace in place (first occurrence) or append at the end; comments are
@@ -1745,6 +1854,54 @@ def insert_after_invokes(text: str, pattern: str) -> tuple:
     return "".join(out), count
 
 
+CATCH_LINE_RX = re.compile(r"^(\s*)\.catch\s+(\S+);\s*(\{[^}]*\})\s*(:\S+)\s*$")
+
+
+def insert_catch_handler(text: str, prev_exc: str, anchor_exc: str,
+                         new_exc: str) -> tuple:
+    """Insert `.catch <new_exc>;` after every `.catch <anchor_exc>;` line
+    whose previous .catch line is `<prev_exc>;` with the same try range and
+    handler (blank lines between .catch directives are skipped when looking
+    back). The inserted line reuses the anchor's indent, try range and
+    handler. Already-present identical lines are not duplicated. Returns
+    (new_text, inserted_count)."""
+    prev_exc = prev_exc.rstrip(";")
+    anchor_exc = anchor_exc.rstrip(";")
+    new_exc = new_exc.rstrip(";")
+    lines = text.splitlines(keepends=True)
+    out: List[str] = []
+    count = 0
+    last_catch = None  # (exc, braced range, handler) of previous .catch line
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        m = CATCH_LINE_RX.match(line.rstrip("\n"))
+        out.append(line)
+        if m:
+            indent, exc, braced, handler = m.groups()
+            if (exc == anchor_exc and last_catch is not None
+                    and last_catch[0] == prev_exc
+                    and last_catch[1] == braced
+                    and last_catch[2] == handler):
+                # look ahead past blank lines: already patched?
+                j = i + 1
+                while j < n and lines[j].strip() == "":
+                    j += 1
+                if j < n:
+                    nm = CATCH_LINE_RX.match(lines[j].rstrip("\n"))
+                    if nm and nm.groups()[1:] == (new_exc, braced, handler):
+                        last_catch = (exc, braced, handler)
+                        i += 1
+                        continue
+                out.append(f"{indent}.catch {new_exc}; {braced} {handler}\n")
+                count += 1
+            last_catch = (exc, braced, handler)
+        elif line.strip() != "":
+            last_catch = None
+        i += 1
+    return "".join(out), count
+
+
 def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> dict:
     """Copy dsv/<key>/<dex>/*.smali into the matching decompiled dex dir, at the
     path from each file's own .class declaration. Classes already present in
@@ -1837,7 +1994,7 @@ def check_dex_blob(path: Path, what: str) -> None:
 
 def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches,
                     work_root: Path, start_patches=None, new_method_patches=None,
-                    replace_patches=None) -> None:
+                    replace_patches=None, catch_patches=None) -> None:
     """Decompile jar's classes*.dex with baksmali, inject dsv smali, apply the
     regex patches, reassemble with smali and replace the jar atomically."""
     if not jar_path.is_file():
@@ -1974,6 +2131,24 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                         continue
                     path.write_text(text.replace(old, new))
                     print(f"  patched {path.name}: {count}x {old} -> {new}")
+        # 3f. .catch handler insertions (e.g. fullscreen-AOD
+        # NoSuchElementException catch after the SecurityException one).
+        for basenames, prev_exc, anchor_exc, new_exc in (catch_patches or []):
+            for base_name in basenames:
+                found = [p for d in dex_out_dirs.values() for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    text = path.read_text()
+                    if anchor_exc not in text:
+                        continue
+                    new_text, count = insert_catch_handler(
+                        text, prev_exc, anchor_exc, new_exc)
+                    if not count:
+                        continue
+                    path.write_text(new_text)
+                    print(f"  patched {path.name}: +{count} .catch {new_exc}")
         # 4. reassemble each dex (same --api it was decompiled with)
         new_blobs = {}
         for dex in dex_names:
@@ -2862,7 +3037,8 @@ def main() -> None:
         choices=["true", "false"],
         default="true",
         help="Fullscreen AOD flag (support_aod_fullscreen in "
-             "product/etc/device_features/duchamp.xml) (default: true)",
+             "product/etc/device_features/duchamp.xml + NoSuchElementException "
+             "catch in miui-services.jar) (default: true)",
     )
     args = parser.parse_args()
     print(f"Starting HyperOS AutoPorter Workflow (mode: {args.mode}, "
@@ -2936,6 +3112,15 @@ def main() -> None:
     # Runs before debloat so deletions apply to the final content.
     apply_mi_ext_tweaks(patch_root, args.hyper_version)
 
+    # Step 4c3b: about_phone_description overlay (device_info.json always,
+    # HTMLViewer.apk only on hos3) onto the build tree. Both modes, before
+    # debloat so deletions apply to the final content.
+    apply_about_phone_description(patch_root, args.hyper_version)
+
+    # Step 4c3c: init.rc tweak (animationfix block at the end of
+    # system/system/etc/init/hw/init.rc). Both modes, before debloat+rebuild.
+    apply_init_rc_tweak(patch_root)
+
     # Step 4c4: build.prop tweaks (density, custom blocks, locale/host) on
     # the build tree. Both modes. Order vs debloat is irrelevant (nothing
     # there touches build.prop).
@@ -2990,7 +3175,12 @@ def main() -> None:
         )
     # Step 4f: Smali-patch miui-services.jar (signature checks -> void when
     # DSV, always: secure-flag bypass at method start + IS_MIUI notification
-    # fix + Baidu->Gboard keyboard strings + DrmBroadcast removal).
+    # fix + Baidu->Gboard keyboard strings + DrmBroadcast removal; gated by
+    # --aod-fullscreen: fullscreen-AOD NoSuchElementException catch).
+    aod_catch = (MIUI_SERVICES_AOD_CATCH_PATCHES
+                 if args.aod_fullscreen == "true" else [])
+    if not aod_catch:
+        print("Fullscreen-AOD jar catch skipped (--aod-fullscreen false).\n")
     patch_jar_smali(
         patch_root / "system_ext" / "framework" / "miui-services.jar",
         "miui-services", miui_methods, [],
@@ -2999,6 +3189,7 @@ def main() -> None:
         replace_patches=MIUI_SERVICES_REPLACE_PATCHES
         + keyboard_replace_rules(["InputMethodManagerServiceImpl.smali"])
         + MIUI_SERVICES_DRM_REPLACE_PATCHES,
+        catch_patches=aod_catch,
     )
     # Step 4f2: Smali-patch miui-framework.jar (keyboard strings only).
     # Always, both modes.
