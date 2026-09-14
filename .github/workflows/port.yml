@@ -38,7 +38,7 @@ on:
           - hos4
           - none
       dsv:
-        description: 'Apply DSV smali patches - signature checks disabling'
+        description: 'Disable signature verification (DSV); functional smali fixes always apply'
         required: true
         default: 'yes'
         type: choice
@@ -48,11 +48,24 @@ on:
       decrypt_data:
         description: 'Decrypt /data (fileencryption -> fileencryptable in fstab)'
         required: true
-        default: 'no'
+        default: 'yes'
         type: choice
         options:
           - "yes"
           - "no"
+      density:
+        description: 'Screen density (persist.miui.density_v2 + ro.sf.lcd_density in product/build.prop)'
+        required: false
+        default: 480
+        type: number
+      aod_fullscreen:
+        description: 'Fullscreen AOD (support_aod_fullscreen in duchamp.xml)'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - "true"
+          - "false"
       ext4_rw:
         description: 'Comma-separated partitions to rebuild as ext4 RW (all/none)'
         required: false
@@ -103,7 +116,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          sudo python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }}
+          sudo python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }} --density ${{ inputs.density }} --aod-fullscreen ${{ inputs.aod_fullscreen }}
 
       - name: Upload build sidecars (debug on failure)
         if: failure()

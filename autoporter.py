@@ -195,6 +195,178 @@ FRAMEWORK_INSERT_PATCHES = [
      r"invoke-static\s+\{[^}]*\},\s*Ljava/security/MessageDigest;->isEqual\(\[B\[B\)Z"),
 ]
 
+# mi_ext tweaks (step 4c3, both modes: mi_ext is the port's in port mode,
+# the stock's in mod mode). build.prop key edits + moves of uninstall blobs
+# from the nested mi_ext/product/ into the real product partition.
+MI_EXT_BUILD_PROP = "mi_ext/etc/build.prop"
+MI_EXT_MOD_DEVICE = "duchamp"
+# build.prop keys dropped from mi_ext (matched by key, any value).
+MI_EXT_DROP_PROP_KEYS = [
+    "ro.mi.xms.version.incremental",
+    "ro.mi.os.custfeatureresolve",
+    "ro.ai.os.version.code",
+    "ro.ai.os.version.name",
+    "ro.mi.os.version.beta",
+]
+# Set to 3 when the key exists ("if possible" — never added when absent).
+MI_EXT_RADIO_5G_KEY = "ro.vendor.radio.5g"
+# "TengeOS | " is prepended to its value (e.g. OS4.0.0.12.XPTCNXM ->
+# "TengeOS | OS4.0.0.12.XPTCNXM"); already-prefixed values are left alone.
+MI_EXT_VERSION_INCR_KEY = "ro.mi.os.version.incremental"
+MI_EXT_VERSION_PREFIX = "TengeOS | "
+# Moved out of mi_ext/etc/build.prop into product/build.prop.
+MI_EXT_UNINSTALL_FLAG = "ro.miui.support.system.app.uninstall.v2"
+# (mi_ext/product/... source, product/... dest, hyper-version gate or None).
+# NOTE: the on-device name is platform-miui-uninstall.xml.
+MI_EXT_PRODUCT_MOVES = [
+    ("mi_ext/product/etc/permissions/platform-miui-uninstall.xml",
+     "product/etc/permissions/platform-miui-uninstall.xml", None),
+    ("mi_ext/product/etc/permissions/rustruntime_cfg_v3_v5.xml",
+     "product/etc/permissions/rustruntime_cfg_v3_v5.xml", "hos4"),
+    ("mi_ext/product/framework/miui-uninstall-empty.jar",
+     "product/framework/miui-uninstall-empty.jar", None),
+]
+# Nested dirs dropped from the mi_ext tree (never baked into mi_ext.img).
+MI_EXT_DROP_DIRS = ["mi_ext/system", "mi_ext/system_ext", "mi_ext/product/app"]
+# GMS permission XML removed from product (both modes, not debloat-gated).
+PRODUCT_GMS_PERMISSION = "product/etc/permissions/cn.google.services.xml"
+
+# device_features patch (step 4c5, both modes, on patch_root): applies the
+# duchamp_mod.xml tweaks to product/etc/device_features/duchamp.xml.
+# support_aod_fullscreen follows --aod-fullscreen (yaml choice true/false),
+# everything else is fixed.
+DEVICE_FEATURES_XML = "product/etc/device_features/duchamp.xml"
+
+# Vibrator fix for hos3->hos4 ports (step 4c6 on the stock tree + services.jar
+# rule below, port mode only): duchamp's vibrator HAL/service is published
+# as /vibratorfeature, the hos4 tree expects /default.
+VIBRATOR_XML = ("odm/etc/vintf/manifest/"
+                "vendor.xiaomi.hardware.vibratorfeature.service.xml")
+VIBRATOR_XML_OLD = "/vibratorfeature"
+VIBRATOR_XML_NEW = "/default"
+VIBRATOR_BIN = "odm/bin/hw/vendor.xiaomi.hardware.vibratorfeature.service"
+VIBRATOR_BIN_OLD = b"/vibratorfeature\x00"
+VIBRATOR_BIN_NEW = b"/default\x00"
+# Smali sequence replacement in VibratorManagerServiceStub$Holder (port mode
+# services.jar): MiuiStubUtil.getImpl lookup -> direct instantiation.
+# NOTE: exact baksmali formatting — the vendored baksmali separates every
+# instruction with a blank line, so multi-line blocks must include them;
+# unmatched files only warn.
+VIBRATOR_SMALI_OLD = (
+    "    const-class v0, Lcom/android/server/vibrator/VibratorManagerServiceStub;\n"
+    "\n"
+    "    invoke-static {v0}, Lcom/miui/base/MiuiStubUtil;->getImpl(Ljava/lang/Class;)Ljava/lang/Object;\n"
+    "\n"
+    "    move-result-object v0\n"
+    "\n"
+    "    check-cast v0, Lcom/android/server/vibrator/VibratorManagerServiceStub;\n"
+)
+VIBRATOR_SMALI_NEW = (
+    "    new-instance v0, Lcom/android/server/vibrator/VibratorManagerServiceStub;\n"
+    "\n"
+    "    invoke-direct {v0}, Lcom/android/server/vibrator/VibratorManagerServiceStub;-><init>()V\n"
+)
+SERVICES_VIBRATOR_REPLACE_PATCHES = [
+    (["VibratorManagerServiceStub$Holder.smali"],
+     VIBRATOR_SMALI_OLD, VIBRATOR_SMALI_NEW),
+]
+
+# Extended keyboard (Baidu -> Gboard), always applied in both modes (step
+# 4f2 jars + step 4g2 APKs). Both the dotted form (const-string component
+# names, proven in Settings.apk) and the slashed form (type descriptors).
+BAIDU_PKG_DOTTED = "com.baidu.input_mi"
+GBOARD_PKG_DOTTED = "com.google.android.inputmethod.latin"
+BAIDU_PKG_SLASHED = "com/baidu/input_mi"
+GBOARD_PKG_SLASHED = "com/google/android/inputmethod/latin"
+# Force-enable IME bottom support: const/4 v0, 0x1 right after the getInt
+# move-result (same blank-line formatting note as the vibrator blocks).
+FUNCTION_SELECT_OLD = (
+    "    invoke-static {v0, v1}, Landroid/os/SystemProperties;->getInt(Ljava/lang/String;I)I\n"
+    "\n"
+    "    move-result v0\n"
+)
+FUNCTION_SELECT_NEW = (
+    "    invoke-static {v0, v1}, Landroid/os/SystemProperties;->getInt(Ljava/lang/String;I)I\n"
+    "\n"
+    "    move-result v0\n"
+    "    const/4 v0, 0x1\n"
+)
+# DRM broadcast removal in ActivityManagerServiceImpl (always, both modes):
+# the 4-line DrmBroadcast sequence is deleted outright (replaced with "").
+# Same blank-line-exact block style as the vibrator/function-select rules.
+DRM_BROADCAST_OLD = (
+    "    iget-object v4, p0, Lcom/android/server/am/ActivityManagerServiceImpl;->mContext:Landroid/content/Context;\n"
+    "\n"
+    "    invoke-static {v4}, Lmiui/drm/DrmBroadcast;->getInstance(Landroid/content/Context;)Lmiui/drm/DrmBroadcast;\n"
+    "\n"
+    "    move-result-object v4\n"
+    "\n"
+    "    invoke-virtual {v4}, Lmiui/drm/DrmBroadcast;->broadcast()V\n"
+)
+MIUI_SERVICES_DRM_REPLACE_PATCHES = [
+    (["ActivityManagerServiceImpl.smali"], DRM_BROADCAST_OLD, ""),
+]
+# (apk/jar-relative rules built per target, basenames + both pkg forms).
+MIUIFREQUENTPHRASE_APK = "product/app/MIUIFrequentPhrase/MIUIFrequentPhrase.apk"
+SETTINGS_APK = "system_ext/priv-app/Settings/Settings.apk"
+
+
+def keyboard_replace_rules(basenames: List[str]):
+    """Baidu->Gboard literal replace rules for the given smali basenames
+    (dotted const-strings + slashed type descriptors)."""
+    return [(list(basenames), old, new)
+            for old, new in ((BAIDU_PKG_DOTTED, GBOARD_PKG_DOTTED),
+                             (BAIDU_PKG_SLASHED, GBOARD_PKG_SLASHED))]
+
+
+def signature_patch_lists(dsv: str) -> tuple:
+    """Return the signature-verification patch lists gated by --dsv:
+    (framework methods, framework inserts, miui-services methods, services
+    methods). With "yes" the DSV_* constants, with "no" empty lists.
+    Functional smali fixes are NOT here and always apply: secure-flag bypass
+    (SERVICES_START_PATCHES, MIUI_SERVICES_START_PATCHES, SERVICES_NEW_METHODS),
+    notification fix (MIUI_SERVICES_REPLACE_PATCHES) and the port vibrator
+    rule (SERVICES_VIBRATOR_REPLACE_PATCHES) — DSV is disable-signature-
+    verification only."""
+    if dsv == "yes":
+        return (FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
+                MIUI_SERVICES_METHOD_PATCHES, SERVICES_METHOD_PATCHES)
+    return ([], [], [], [])
+
+# build.prop tweaks (step 4c4, both modes, on patch_root): density + custom
+# prop blocks + locale/host normalization. product/build.prop is the
+# partition-root file (NOT product/etc/build.prop); system props live in the
+# nested system/system/build.prop (SAR layout, like the jars).
+PRODUCT_BUILD_PROP = "product/build.prop"
+SYSTEM_BUILD_PROP = "system/system/build.prop"
+DENSITY_PROP_KEYS = ["persist.miui.density_v2", "ro.sf.lcd_density"]
+PRODUCT_PROP_APPEND = [
+    "ro.control_privapp_permissions=",
+    "persist.sys.add_blurnoise_supported=true",
+    "persist.sys.background_blur_status_default=true",
+    "persist.sys.background_blur_supported=true",
+    "persist.sys.background_blur_version=2",
+    "ro.miui.has_handy_mode_sf=1",
+    "ro.miui.support.system.app.uninstall.v2=true",
+]
+SYSTEM_PROP_APPEND = [
+    "ro.control_privapp_permissions=",
+    "ro.miui.has_gmscore=1",
+    "ro.opa.eligible_device=true",
+    "# Optimized & Safe Dex2oat",
+    "dalvik.vm.dex2oat-filter=speed",
+    "dalvik.vm.image-dex2oat-filter=speed",
+    "dalvik.vm.dex2oat-threads=4",
+    "dalvik.vm.boot-dex2oat-threads=4",
+    "pm.dexopt.bg-dexopt=speed",
+    "ro.sys.fw.bg_apps_limit=32",
+    "ro.config.sdha_apps_bg_max=64",
+    "ro.config.sdha_apps_bg_min=8",
+    "persist.sys.props.games=true",
+    "debug.graphics.game_default_frame_rate.disabled=true",
+    "debug.hwui.renderer=skiavk",
+]
+
 # Donor blobs copied from the unpacked STOCK trees into the unpacked PORT trees
 # before the rebuild (hardware blobs the port build lacks). Paths are relative
 # to UNPACKED_STOCK_DIR / UNPACKED_PORT_DIR. Missing sources only warn.
@@ -934,8 +1106,8 @@ def apply_modded_apps(mod_dir: Path, unpacked_root: Path) -> None:
 
 
 def flatten_pangu_system(product_dir: Path) -> None:
-    """Move <product>/pangu/system/* up into <product>/ (the port OTA nests
-    product content there). No-op when the nested dir is absent."""
+    """Move <product>/pangu/system/* up into <product>/ (stock and port OTAs
+    nest product content there). No-op when the nested dir is absent."""
     nested = product_dir / "pangu" / "system"
     if not nested.is_dir():
         print("No pangu/system nesting in product, skip flattening.\n")
@@ -1005,6 +1177,345 @@ def apply_donor_files(stock_root: Path, port_root: Path) -> None:
             shutil.copy2(src, dst)
             copied += 1
     print(f"Donor files done: copied {copied}, missing {missing}.\n")
+
+
+def move_file_preserve(src: Path, dst: Path) -> None:
+    """Move one file/symlink, preserving xattrs (copy_file_preserve alone
+    only copies). An existing dest is replaced (with a warning)."""
+    if src.is_symlink():
+        if dst.is_dir() and not dst.is_symlink():
+            shutil.rmtree(dst)
+        elif dst.exists() or dst.is_symlink():
+            print(f"  [move] replacing {dst} with {src}")
+            dst.unlink()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(os.readlink(src), dst)
+        try:
+            for name in os.listxattr(src, follow_symlinks=False):
+                try:
+                    os.setxattr(dst, name,
+                                os.getxattr(src, name, follow_symlinks=False),
+                                follow_symlinks=False)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        src.unlink()
+        return
+    if dst.is_dir() and not dst.is_symlink():
+        print(f"  [move] replacing {dst} with {src}")
+        shutil.rmtree(dst)
+    elif dst.exists() or dst.is_symlink():
+        print(f"  [move] replacing {dst} with {src}")
+        dst.unlink()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    copy_file_preserve(src, dst)
+    src.unlink()
+
+
+def _upsert_prop(prop_path: Path, key: str, value: str) -> None:
+    """Set key=value in a build.prop file (replace in place, else append).
+    Comments/blank lines are preserved; creates the file when absent."""
+    lines = prop_path.read_text().splitlines() if prop_path.is_file() else []
+    found = False
+    for i, raw in enumerate(lines):
+        s = raw.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        if s.partition("=")[0].strip() == key:
+            lines[i] = f"{key}={value}"
+            found = True
+    if not found:
+        lines.append(f"{key}={value}")
+    prop_path.parent.mkdir(parents=True, exist_ok=True)
+    prop_path.write_text("\n".join(lines) + "\n")
+
+
+def _patch_mi_ext_build_prop(build_root: Path) -> None:
+    """Edit mi_ext/etc/build.prop: mod_device -> duchamp, drop the
+    version/ai keys, force radio.5g=3 when present, and move the uninstall
+    flag line into product/etc/build.prop. Missing file only warns."""
+    src_prop = build_root / MI_EXT_BUILD_PROP
+    if not src_prop.is_file():
+        print(f"  [missing, skip] {MI_EXT_BUILD_PROP}")
+        return
+    out: List[str] = []
+    dropped, flag_value, mod_device, radio, versioned = 0, None, False, False, False
+    for raw in src_prop.read_text().splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            out.append(raw)
+            continue
+        key, _, value = (part.strip() for part in s.partition("="))
+        if key in MI_EXT_DROP_PROP_KEYS:
+            dropped += 1
+            continue
+        if key == MI_EXT_UNINSTALL_FLAG:
+            flag_value = value
+            dropped += 1
+            continue
+        if key == "ro.product.mod_device":
+            out.append(f"ro.product.mod_device={MI_EXT_MOD_DEVICE}")
+            mod_device = True
+            continue
+        if key == MI_EXT_RADIO_5G_KEY:
+            out.append(f"{MI_EXT_RADIO_5G_KEY}=3")
+            radio = True
+            continue
+        if key == MI_EXT_VERSION_INCR_KEY:
+            if not value.startswith(MI_EXT_VERSION_PREFIX):
+                value = f"{MI_EXT_VERSION_PREFIX}{value}"
+            out.append(f"{MI_EXT_VERSION_INCR_KEY}={value}")
+            versioned = True
+            continue
+        out.append(raw)
+    if not mod_device:
+        out.append(f"ro.product.mod_device={MI_EXT_MOD_DEVICE}")
+    src_prop.write_text("\n".join(out) + "\n")
+    print(f"  {MI_EXT_BUILD_PROP}: mod_device={'set' if mod_device else 'appended'}, "
+          f"dropped {dropped} line(s), radio.5g={'=3' if radio else 'absent, skip'}, "
+          f"version.incr={'prefixed' if versioned else 'absent, skip'}")
+    if flag_value is None:
+        print(f"  [missing, skip] {MI_EXT_UNINSTALL_FLAG} flag (not in mi_ext build.prop)")
+        return
+    dest_prop = build_root / "product" / "build.prop"
+    if not dest_prop.is_file():
+        print("  [missing, skip] product/build.prop (flag has nowhere to go)")
+        return
+    _upsert_prop(dest_prop, MI_EXT_UNINSTALL_FLAG, flag_value)
+    print(f"  moved {MI_EXT_UNINSTALL_FLAG}={flag_value} -> product/build.prop")
+
+
+def apply_mi_ext_tweaks(build_root: Path, hyper_version: str) -> None:
+    """mi_ext + product permission tweaks on the build tree (patch_root, so
+    both modes): mi_ext build.prop edits, moves of uninstall blobs from the
+    nested mi_ext/product/ into product/, removal of mi_ext/system{,_ext},
+    and removal of the GMS permission XML from product. Missing sources only
+    warn — OTAs differ between builds."""
+    print("=== Applying mi_ext tweaks ===")
+    mi_ext = build_root / "mi_ext"
+    if not mi_ext.is_dir():
+        print("  [warn] no mi_ext/ in build tree, skip mi_ext tweaks")
+    else:
+        _patch_mi_ext_build_prop(build_root)
+        for src_rel, dst_rel, gate in MI_EXT_PRODUCT_MOVES:
+            if gate is not None and gate != hyper_version:
+                print(f"  [skip] {src_rel} (needs {gate})")
+                continue
+            src, dst = build_root / src_rel, build_root / dst_rel
+            if not (src.is_file() or src.is_symlink()):
+                print(f"  [missing, skip] {src_rel}")
+                continue
+            move_file_preserve(src, dst)
+            print(f"  moved {src_rel} -> {dst_rel}")
+            # drop emptied parents up to mi_ext/product (best effort)
+            parent = src.parent
+            stop = build_root / "mi_ext" / "product"
+            while parent == stop or stop in parent.parents:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                if parent == stop:
+                    break
+                parent = parent.parent
+        for rel in MI_EXT_DROP_DIRS:
+            target = build_root / rel
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+                print(f"  removed {rel}/")
+            elif target.is_symlink() or target.exists():
+                target.unlink()
+                print(f"  removed {rel}")
+            else:
+                print(f"  [missing, skip] {rel}/")
+    gms = build_root / PRODUCT_GMS_PERMISSION
+    if gms.is_file() or gms.is_symlink():
+        gms.unlink()
+        print(f"  removed {PRODUCT_GMS_PERMISSION}")
+    else:
+        print(f"  [missing, skip] {PRODUCT_GMS_PERMISSION}")
+    print()
+
+
+def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
+    """Upsert entries into a build.prop file, in order: key=value lines
+    replace in place (first occurrence) or append at the end; comments are
+    appended once (no dups on re-runs). Other lines are preserved verbatim."""
+    lines = prop_path.read_text().splitlines()
+    for entry in entries:
+        s = entry.strip()
+        if not s or s.startswith("#"):
+            if s and all(s != l.strip() for l in lines):
+                lines.append(s)
+            continue
+        key, _, value = (p.strip() for p in s.partition("="))
+        for i, raw in enumerate(lines):
+            t = raw.strip()
+            if t and not t.startswith("#") and "=" in t \
+                    and t.partition("=")[0].strip() == key:
+                lines[i] = f"{key}={value}"
+                break
+        else:
+            lines.append(f"{key}={value}")
+    prop_path.write_text("\n".join(lines) + "\n")
+
+
+def apply_build_prop_tweaks(build_root: Path, density: int) -> None:
+    """product/system build.prop tweaks on the build tree (patch_root, both
+    modes): density keys in product, custom append blocks, and locale/host
+    normalization in both files. Missing files only warn."""
+    print("=== Applying build.prop tweaks ===")
+    jobs = [
+        (PRODUCT_BUILD_PROP,
+         [f"{k}={density}" for k in DENSITY_PROP_KEYS] + PRODUCT_PROP_APPEND),
+        (SYSTEM_BUILD_PROP, SYSTEM_PROP_APPEND),
+    ]
+    tail = ["ro.product.locale=en-US", "ro.build.host=wectazz"]
+    for rel, entries in jobs:
+        prop = build_root / rel
+        if not prop.is_file():
+            print(f"  [missing, skip] {rel}")
+            continue
+        _apply_prop_entries(prop, entries + tail)
+        print(f"  {rel}: +{len(entries)} entries, locale=en-US, host=wectazz")
+    print()
+
+
+def _set_xml_value(lines: List[str], tag: str, name: str, value: str,
+                   only_value: str = None) -> bool:
+    """Set <tag name="name">value</tag> in place. With only_value, only lines
+    currently holding that value are touched (leaves other occurrences —
+    e.g. the already-true first aod_support_keycode_goto_dismiss — alone).
+    Returns True when at least one line was rewritten."""
+    pat = re.compile(rf'^(\s*<{tag} name="{re.escape(name)}">)(.*)(</{tag}>\s*)$')
+    hit = False
+    for i, raw in enumerate(lines):
+        m = pat.match(raw)
+        if m and (only_value is None or m.group(2).strip() == only_value):
+            lines[i] = f"{m.group(1)}{value}{m.group(3)}"
+            hit = True
+    return hit
+
+
+def _ensure_xml_after(lines: List[str], anchors: List[str], new_line: str) -> bool:
+    """Insert new_line after the first line matching the first anchor that
+    matches anything (anchors are priority-ordered fallbacks), unless a line
+    with the same tag+name already exists. Returns True when inserted."""
+    name_m = re.search(r'name="([^"]+)"', new_line)
+    if name_m:
+        key_pat = re.compile(rf'<\w+ name="{re.escape(name_m.group(1))}">')
+        if any(key_pat.search(l) for l in lines):
+            return False
+    for anchor_pat in anchors:
+        anchor = re.compile(anchor_pat)
+        for i, raw in enumerate(lines):
+            if anchor.search(raw):
+                lines.insert(i + 1, new_line)
+                return True
+    return False
+
+
+def patch_device_features(build_root: Path, aod_fullscreen: str) -> None:
+    """Apply the duchamp_mod.xml tweaks to product/etc/device_features/
+    duchamp.xml on the build tree (patch_root, both modes — in port mode the
+    file arrives via donors, so this runs after them). support_aod_fullscreen
+    follows aod_fullscreen (yaml true/false), the rest is fixed: new
+    support_aod_aon/screen_enhance/AI_display keys, keycode_goto flips,
+    90Hz in fpsList, defaultFps 120. Missing file only warns; re-runs are
+    idempotent (values are set, inserts are skipped when the key exists)."""
+    xml = build_root / DEVICE_FEATURES_XML
+    if not xml.is_file():
+        print(f"  [missing, skip] {DEVICE_FEATURES_XML}\n")
+        return
+    print("=== Patching device_features/duchamp.xml ===")
+    lines = xml.read_text().splitlines()
+    log: List[str] = []
+
+    def set_or_insert(tag, name, value, anchors, only_value=None):
+        if _set_xml_value(lines, tag, name, value, only_value):
+            log.append(f"set {name}={value}")
+        elif _ensure_xml_after(lines, anchors,
+                               f'    <{tag} name="{name}">{value}</{tag}>'):
+            log.append(f"added {name}={value}")
+
+    # AOD block (anchor: the support_aod line itself).
+    set_or_insert("bool", "support_aod_fullscreen", aod_fullscreen,
+                  [r'<bool name="support_aod">'])
+    set_or_insert("bool", "support_aod_aon", "true",
+                  [r'<bool name="support_aod_fullscreen">',
+                   r'<bool name="support_aod">'])
+    # Keycode-goto flips (second aod_support_keycode_goto_dismiss only: the
+    # first one is already true in stock, so only false->true is touched).
+    # r'$^' never matches: these keys must exist, never be created.
+    set_or_insert("bool", "is_only_support_keycode_goto", "false", [r'$^'])
+    set_or_insert("bool", "aod_support_keycode_goto_dismiss", "true", [r'$^'],
+                  only_value="false")
+    # Display block (anchor: eyecare mode line, like in the mod file).
+    set_or_insert("bool", "support_screen_enhance_engine", "true",
+                  [r'<integer name="default_eyecare_mode">'])
+    set_or_insert("bool", "support_AI_display", "true",
+                  [r'<bool name="support_screen_enhance_engine">',
+                   r'<integer name="default_eyecare_mode">'])
+    # 90Hz in fpsList (anchor: the 120 item of that block).
+    if not any("<item>90</item>" in l for l in lines):
+        in_fps, done = False, False
+        for i, raw in enumerate(lines):
+            if '<integer-array name="fpsList">' in raw:
+                in_fps = True
+            elif in_fps and "</integer-array>" in raw:
+                break
+            elif in_fps and "<item>120</item>" in raw:
+                lines.insert(i + 1, "        <item>90</item>")
+                done = True
+                break
+        if done:
+            log.append("added fpsList 90Hz")
+    # Default refresh rate.
+    set_or_insert("integer", "defaultFps", "120", [r'$^'])
+
+    xml.write_text("\n".join(lines) + "\n")
+    for entry in log:
+        print(f"  {DEVICE_FEATURES_XML}: {entry}")
+    if not log:
+        print(f"  {DEVICE_FEATURES_XML}: already patched, no changes")
+    print()
+
+
+def apply_vibrator_fix(stock_root: Path) -> None:
+    """hos3->hos4 vibrator fix on the unpacked stock tree (port mode only —
+    odm exists only in stock): /vibratorfeature -> /default in the vintf
+    manifest XML, and the same replacement (NUL-padded to equal length) in
+    the hw service binary. Missing sources only warn; a binary without the
+    pattern is left alone (already patched or firmware differs)."""
+    print("=== Applying vibrator fix (hos3->hos4) ===")
+    manifest = stock_root / VIBRATOR_XML
+    if not manifest.is_file():
+        print(f"  [missing, skip] {VIBRATOR_XML}")
+    else:
+        text = manifest.read_text()
+        count = text.count(VIBRATOR_XML_OLD)
+        if not count:
+            print(f"  [warn] no {VIBRATOR_XML_OLD} in {VIBRATOR_XML}, skip")
+        else:
+            manifest.write_text(text.replace(VIBRATOR_XML_OLD, VIBRATOR_XML_NEW))
+            print(f"  {VIBRATOR_XML}: {count}x {VIBRATOR_XML_OLD} -> {VIBRATOR_XML_NEW}")
+    service = stock_root / VIBRATOR_BIN
+    if not service.is_file():
+        print(f"  [missing, skip] {VIBRATOR_BIN}")
+    else:
+        data = bytearray(service.read_bytes())
+        count = data.count(VIBRATOR_BIN_OLD)
+        if count == 1:
+            padded = VIBRATOR_BIN_NEW + b"\x00" * (len(VIBRATOR_BIN_OLD) - len(VIBRATOR_BIN_NEW))
+            service.write_bytes(data.replace(VIBRATOR_BIN_OLD, padded))
+            print(f"  {VIBRATOR_BIN}: patched 1 occurrence (NUL-padded, size kept)")
+        elif not count:
+            print(f"  [warn] pattern absent in {VIBRATOR_BIN} "
+                  f"(already patched or firmware differs), skip")
+        else:
+            print(f"  [warn] {count}x pattern in {VIBRATOR_BIN} (expected 1), skip")
+    print()
 
 
 def apply_debloat_entries(unpacked_root: Path, entries: List[str], label: str) -> None:
@@ -1455,9 +1966,47 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                 zi.create_system = info.create_system
                 zout.writestr(zi, new_blobs.get(info.filename, blobs[info.filename]))
         os.replace(tmp, jar_path)
-        print(f"Smali patching done: {jar_path.name} ({jar_path.stat().st_size} bytes).\n")
+        print(f"Smali patching done: {jar_path.name} ({jar_path.stat().st_size} bytes).")
+        if jar_path.suffix == ".jar":
+            # Drop only this jar's stale precompiled files: oat/<isa>/ holds
+            # other jars' valid outputs too, so the whole dir must stay.
+            # The device recompiles on first boot (odrefresh/dalvik-cache).
+            removed = []
+            for ext in (".odex", ".vdex", ".art"):
+                stale = jar_path.parent / "oat" / "arm64" / f"{jar_path.stem}{ext}"
+                if stale.is_file() or stale.is_symlink():
+                    stale.unlink()
+                    removed.append(stale.name)
+            if removed:
+                print(f"  removed stale oat files: {', '.join(sorted(removed))}")
+            else:
+                print(f"  no stale oat files for {jar_path.stem}, skip")
+        print()
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
+
+
+def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
+                    build_root: Path) -> None:
+    """Smali-patch one APK inside the build tree (patch_root, both modes):
+    APKs are zips with classes*.dex, so the jar patcher handles them as-is
+    (no dsv injection — the apk-* key has no dsv dir, skips gracefully).
+    Afterwards the oat/ dir next to the APK is dropped: dex was rebuilt, so
+    stale compiled code must not survive. Missing APK only warns.
+    NOTE: the rezip drops the APK signing block (v2/v3); v1 META-INF entries
+    survive as (stale) entries — DSV neuters the checks, same as the
+    modded-apps overlays."""
+    apk_path = build_root / apk_rel
+    if not apk_path.is_file():
+        print(f"WARNING: {apk_rel} not found, skip APK smali patching.\n")
+        return
+    patch_jar_smali(apk_path, f"apk-{tag}", [], [],
+                    BASE_DIR / "smali_work" / f"apk-{tag}",
+                    replace_patches=replace_patches)
+    oat = apk_path.parent / "oat"
+    if oat.is_dir() and not oat.is_symlink():
+        shutil.rmtree(oat)
+        print(f"  removed {oat} (stale oat next to patched APK)\n")
 
 
 def parse_ext4_rw(value: str, valid: List[str]) -> set:
@@ -2183,8 +2732,9 @@ def main() -> None:
         "--dsv",
         choices=["yes", "no"],
         default="yes",
-        help="Apply DSV smali patching - signature checks disabling "
-             "(framework, miui-services, services jars) (default: yes)",
+        help="Apply DSV (disable signature verification) smali patching; "
+             "functional smali fixes (secure-flag bypass, notifications, "
+             "vibrator) always apply (default: yes)",
     )
     parser.add_argument(
         "--decrypt-data",
@@ -2206,12 +2756,27 @@ def main() -> None:
         default=150,
         help="Free megabytes to keep in each ext4 RW partition (default: 150)",
     )
+    parser.add_argument(
+        "--density",
+        type=int,
+        default=480,
+        help="Screen density written to product/build.prop "
+             "(persist.miui.density_v2 + ro.sf.lcd_density) (default: 480)",
+    )
+    parser.add_argument(
+        "--aod-fullscreen",
+        choices=["true", "false"],
+        default="true",
+        help="Fullscreen AOD flag (support_aod_fullscreen in "
+             "product/etc/device_features/duchamp.xml) (default: true)",
+    )
     args = parser.parse_args()
     print(f"Starting HyperOS AutoPorter Workflow (mode: {args.mode}, "
           f"HyperOS version: {args.hyper_version}, "
           f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
-          f"decrypt-data: {args.decrypt_data}, ext4-rw: {args.ext4_rw}, "
-          f"ext4-free: {args.ext4_free_mb}MB)...\n")
+           f"decrypt-data: {args.decrypt_data}, ext4-rw: {args.ext4_rw}, "
+           f"ext4-free: {args.ext4_free_mb}MB, density: {args.density}, "
+           f"aod-fullscreen: {args.aod_fullscreen})...\n")
 
     # Step 1: Tools Setup
     setup_tools()
@@ -2243,9 +2808,13 @@ def main() -> None:
                           EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
         unpack_partitions(PORT_PARTITIONS, EXTRACTED_PORT_DIR, UNPACKED_PORT_DIR)
 
-        # Step 4b: Flatten port product nesting (pangu/system -> product root) so
-        # debloat paths and the rebuild see the final flat layout. Port only.
+        # Step 4b: Flatten product nesting (pangu/system -> product root) so
+        # debloat paths, donors and the rebuild see the final flat layout.
+        # Stock too: duchamp product carries the same nesting, and donors
+        # (displayconfig, overlays) are read from the stock tree — without
+        # the flatten they would miss into pangu/. No-op when absent.
         flatten_pangu_system(UNPACKED_PORT_DIR / "product")
+        flatten_pangu_system(UNPACKED_STOCK_DIR / "product")
 
         # Step 4c: Copy stock donor blobs into the port tree (before debloat and
         # rebuild bake the trees into images). Port only — mod has no donors.
@@ -2260,9 +2829,35 @@ def main() -> None:
         patch_root = UNPACKED_PORT_DIR
     else:
         unpack_partitions(MOD_PARTITIONS, EXTRACTED_STOCK_DIR, UNPACKED_STOCK_DIR)
+        # Same flatten on the stock product tree (mod has no port tree, so
+        # stock pangu/system nesting would otherwise never be flattened).
+        flatten_pangu_system(UNPACKED_STOCK_DIR / "product")
         # Same overlay onto the single stock tree (before debloat).
         apply_modded_apps(mod_dir, UNPACKED_STOCK_DIR)
         patch_root = UNPACKED_STOCK_DIR
+
+    # Step 4c3: mi_ext tweaks (build.prop, uninstall-blob moves into
+    # product/, nested dir drops) + product GMS permission removal. Both
+    # modes (mi_ext is the port's in port mode, the stock's in mod mode).
+    # Runs before debloat so deletions apply to the final content.
+    apply_mi_ext_tweaks(patch_root, args.hyper_version)
+
+    # Step 4c4: build.prop tweaks (density, custom blocks, locale/host) on
+    # the build tree. Both modes. Order vs debloat is irrelevant (nothing
+    # there touches build.prop).
+    apply_build_prop_tweaks(patch_root, args.density)
+
+    # Step 4c5: device_features patch (AOD/display/fps tweaks from the mod
+    # file, fullscreen flag from --aod-fullscreen). Both modes, after donors
+    # (in port mode the file arrives from stock via donors).
+    patch_device_features(patch_root, args.aod_fullscreen)
+
+    # Step 4c6: hos3->hos4 vibrator fix on the stock tree (vintf XML + hw
+    # service binary; odm exists only in stock). Port mode only, not
+    # dsv-gated (functional port fix, not signature disabling). The
+    # services.jar half rides the smali step below.
+    if args.mode == "port":
+        apply_vibrator_fix(UNPACKED_STOCK_DIR)
 
     # Step 4d: Debloat the unpacked trees + patch vendor fstab (AVB off, rw).
     # Port mode: DEBLOAT onto the port tree, STOCK_DEBLOAT onto the stock
@@ -2280,36 +2875,74 @@ def main() -> None:
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
 
-    # Steps 4e-4g: DSV smali patching (signature checks disabling).
+    # Steps 4e-4g: jar smali patching. --dsv gates ONLY the
+    # signature-verification lists (DSV = disable signature verification);
+    # functional fixes always apply: secure-flag bypass, IS_MIUI
+    # notifications, and (port mode) the vibrator rule. Port-only rules are
+    # empty in mod mode.
+    fw_methods, fw_inserts, miui_methods, svc_methods = \
+        signature_patch_lists(args.dsv)
+    if args.dsv != "yes":
+        print("DSV (disable signature verification) skipped (--dsv no); "
+              "functional smali fixes still apply.\n")
+    vibrator_replace = SERVICES_VIBRATOR_REPLACE_PATCHES if args.mode == "port" else []
     if args.dsv == "yes":
         # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig).
+        # Skipped whole with --dsv no (every framework rule is signature).
         patch_jar_smali(
             patch_root / "system" / "system" / "framework" / "framework.jar",
-            "framework", FRAMEWORK_METHOD_PATCHES, FRAMEWORK_INSERT_PATCHES,
+            "framework", fw_methods, fw_inserts,
             BASE_DIR / "smali_work" / "framework",
         )
-        # Step 4f: Smali-patch miui-services.jar (signature checks -> void,
-        # secure-flag bypass at method start).
-        patch_jar_smali(
-            patch_root / "system_ext" / "framework" / "miui-services.jar",
-            "miui-services", MIUI_SERVICES_METHOD_PATCHES, [],
-            BASE_DIR / "smali_work" / "miui-services",
-            start_patches=MIUI_SERVICES_START_PATCHES,
-            replace_patches=MIUI_SERVICES_REPLACE_PATCHES,
-        )
-        # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void,
-        # secure-flag bypass incl. a brand-new isBypassSecureFlag method).
-        # NOTE: services.jar lives in system/system (AOSP location), NOT in
-        # system_ext like miui-services.jar (proven by CI: absent under system_ext).
-        patch_jar_smali(
-            patch_root / "system" / "system" / "framework" / "services.jar",
-            "services", SERVICES_METHOD_PATCHES, [],
-            BASE_DIR / "smali_work" / "services",
-            start_patches=SERVICES_START_PATCHES,
-            new_method_patches=SERVICES_NEW_METHODS,
-        )
-    else:
-        print("DSV smali patching skipped (--dsv no).\n")
+    # Step 4f: Smali-patch miui-services.jar (signature checks -> void when
+    # DSV, always: secure-flag bypass at method start + IS_MIUI notification
+    # fix + Baidu->Gboard keyboard strings + DrmBroadcast removal).
+    patch_jar_smali(
+        patch_root / "system_ext" / "framework" / "miui-services.jar",
+        "miui-services", miui_methods, [],
+        BASE_DIR / "smali_work" / "miui-services",
+        start_patches=MIUI_SERVICES_START_PATCHES,
+        replace_patches=MIUI_SERVICES_REPLACE_PATCHES
+        + keyboard_replace_rules(["InputMethodManagerServiceImpl.smali"])
+        + MIUI_SERVICES_DRM_REPLACE_PATCHES,
+    )
+    # Step 4f2: Smali-patch miui-framework.jar (keyboard strings only).
+    # Always, both modes.
+    patch_jar_smali(
+        patch_root / "system_ext" / "framework" / "miui-framework.jar",
+        "miui-framework", [], [],
+        BASE_DIR / "smali_work" / "miui-framework",
+        replace_patches=keyboard_replace_rules(
+            ["InputMethodServiceInjector.smali"]),
+    )
+    # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void
+    # when DSV, always: secure-flag bypass incl. brand-new
+    # isBypassSecureFlag + port vibrator rule).
+    # NOTE: services.jar lives in system/system (AOSP location), NOT in
+    # system_ext like miui-services.jar (proven by CI: absent under system_ext).
+    patch_jar_smali(
+        patch_root / "system" / "system" / "framework" / "services.jar",
+        "services", svc_methods, [],
+        BASE_DIR / "smali_work" / "services",
+        start_patches=SERVICES_START_PATCHES,
+        new_method_patches=SERVICES_NEW_METHODS,
+        replace_patches=vibrator_replace or None,
+    )
+
+    # Step 4g2: Smali-patch APKs (extended keyboard). Always, both modes;
+    # each call drops the stale oat/ next to the APK by itself.
+    patch_apk_smali(
+        MIUIFREQUENTPHRASE_APK, "frequentphrase",
+        keyboard_replace_rules(["InputMethodBottomManager.smali"]),
+        patch_root,
+    )
+    patch_apk_smali(
+        SETTINGS_APK, "settings",
+        keyboard_replace_rules(["AvailableVirtualKeyboardFragment.smali"])
+        + [(["InputMethodFunctionSelectUtils.smali"],
+            FUNCTION_SELECT_OLD, FUNCTION_SELECT_NEW)],
+        patch_root,
+    )
 
     # Step 4h: Move product/data-app/* into product/app/ on the build tree.
     # Runs last, right before the rebuild, so everything (debloat leftovers,
