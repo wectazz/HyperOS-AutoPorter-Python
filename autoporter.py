@@ -325,6 +325,16 @@ MIUI_SERVICES_AOD_CATCH_PATCHES = [
 # (apk/jar-relative rules built per target, basenames + both pkg forms).
 MIUIFREQUENTPHRASE_APK = "product/app/MIUIFrequentPhrase/MIUIFrequentPhrase.apk"
 SETTINGS_APK = "system_ext/priv-app/Settings/Settings.apk"
+# DevicesOverlay.apk resource patch (step 4g3, always, both modes):
+# status_bar_padding_top 14.0px -> 25.0px in any dimen.xml carrying it.
+# (glob matched against every decoded file name, pattern is a regex —
+# the dimen line indent may vary, so only the tag+value is anchored).
+DEVICE_OVERLAY_APK = "product/overlay/DevicesOverlay.apk"
+DEVICE_OVERLAY_RES_PATCHES = [
+    ("dimen.xml",
+     r'(<dimen name="status_bar_padding_top">)14\.0px(</dimen>)',
+     r"\g<1>25.0px\g<2>"),
+]
 # Settings.apk .array-data replacements (step 4g2, always, both modes).
 # Old blocks are matched by their 16 float values (as ints — robust to the
 # декомпилер's :array_NNN label numbering, which shifts between builds),
@@ -1172,6 +1182,19 @@ def copy_tree_into(src_dir: Path, dest_dir: Path) -> None:
             copy_file_preserve(item, dest)
 
 
+def drop_oat_next_to(apk_path: Path, reason: str = "modified") -> bool:
+    """Drop the stale oat/ dir next to an APK whose content just changed
+    (modded-apps overlay, donor/about-phone copy-in, smali patch). The oat/
+    dir holds precompiled code for the previous bytes — keeping it would
+    boot stale code. No-op (False) when absent; True when dropped."""
+    oat = apk_path.parent / "oat"
+    if oat.is_dir() and not oat.is_symlink():
+        shutil.rmtree(oat)
+        print(f"  removed {oat} (stale oat next to {reason} APK)")
+        return True
+    return False
+
+
 def apply_modded_apps(mod_dir: Path, unpacked_root: Path) -> None:
     """Overlay the modded-apps set onto an unpacked tree: each top-level
     partition dir (product/, system/, system_ext/, ...) merges recursively
@@ -1196,7 +1219,23 @@ def apply_modded_apps(mod_dir: Path, unpacked_root: Path) -> None:
             continue
         copy_tree_into(part, dest)
         applied += 1
-    print(f"Modded apps done: applied {applied} partition(s), skipped {missing}.\n")
+    print(f"Modded apps done: applied {applied} partition(s), skipped {missing}.")
+    # Every overlaid APK invalidates the precompiled code beside the dest:
+    # drop oat/ next to each dest APK the mod set provides.
+    oat_dropped = 0
+    for part in sorted(mod_dir.iterdir()):
+        if part.is_symlink() or not part.is_dir():
+            continue
+        for apk in sorted(part.rglob("*.apk")):
+            if apk.is_symlink() or not apk.is_file():
+                continue
+            dest_apk = unpacked_root / part.name / apk.relative_to(part)
+            if dest_apk.is_file() or dest_apk.is_symlink():
+                if drop_oat_next_to(dest_apk, "overlaid"):
+                    oat_dropped += 1
+    if oat_dropped:
+        print(f"  dropped stale oat next to {oat_dropped} overlaid APK(s)")
+    print()
 
 
 def flatten_pangu_system(product_dir: Path) -> None:
@@ -1247,6 +1286,8 @@ def apply_donor_files(stock_root: Path, port_root: Path) -> None:
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
+        if dst.suffix == ".apk":
+            drop_oat_next_to(dst, "donor")
         copied += 1
     for src_rel, dst_rel in DONOR_DIRS:
         src, dst = stock_root / src_rel, port_root / dst_rel
@@ -1255,6 +1296,9 @@ def apply_donor_files(stock_root: Path, port_root: Path) -> None:
             missing += 1
             continue
         shutil.copytree(src, dst, dirs_exist_ok=True)
+        for apk in sorted(dst.rglob("*.apk")):
+            if apk.is_file() and not apk.is_symlink():
+                drop_oat_next_to(apk, "donor")
         copied += 1
     for src_dir_rel, dst_dir_rel, names in DONOR_DIR_FILES:
         for name in names:
@@ -1266,6 +1310,8 @@ def apply_donor_files(stock_root: Path, port_root: Path) -> None:
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+            if dst.suffix == ".apk":
+                drop_oat_next_to(dst, "donor")
             copied += 1
     print(f"Donor files done: copied {copied}, missing {missing}.\n")
 
@@ -1433,9 +1479,9 @@ def apply_about_phone_description(build_root: Path, hyper_version: str) -> None:
     """Copy the committed about_phone_description/duchamp/<hyper_version>/
     overlay into the build tree (patch_root, both modes): device_info.json
     -> product/etc/ and HTMLViewer.apk -> system/system/priv-app/, both for
-    the selected version. Copy (not move) with xattrs/symlinks via
-    copy_file_preserve(); existing dests are replaced. Missing sources only
-    warn."""
+    the     selected version. Copy (not move) with xattrs/symlinks via
+    copy_file_preserve(); existing dests are replaced. Stale oat/ next to a
+    copied-in APK is dropped. Missing sources only warn."""
     print("=== Applying about_phone_description overlay ===")
     overlay = ABOUT_PHONE_DIR / hyper_version
     if not overlay.is_dir():
@@ -1469,6 +1515,8 @@ def apply_about_phone_description(build_root: Path, hyper_version: str) -> None:
             elif dst.is_symlink() or dst.exists():
                 dst.unlink()
             copy_file_preserve(src, dst)
+        if dst.suffix == ".apk":
+            drop_oat_next_to(dst, "overlaid")
         print(f"  copied {src_rel} -> {dst_rel}")
     print()
 
@@ -2396,10 +2444,92 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
-    oat = apk_path.parent / "oat"
-    if oat.is_dir() and not oat.is_symlink():
-        shutil.rmtree(oat)
-        print(f"  removed {oat} (stale oat next to patched APK)\n")
+    drop_oat_next_to(apk_path, "patched")
+    print()
+
+
+def apply_res_file_patches(root: Path, res_patches, log_base: Path) -> int:
+    """Apply (file_glob, pattern, repl) regex edits to decoded text files
+    under root (file_glob matched against each file name via rglob).
+    Binary/unreadable files are skipped. Returns the total replacement
+    count (warns per rule when nothing matched)."""
+    total_all = 0
+    for file_glob, pattern, repl in res_patches:
+        rx = re.compile(pattern)
+        total = 0
+        for path in sorted(root.rglob(file_glob)):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                text = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            new_text, count = rx.subn(repl, text)
+            if not count:
+                continue
+            path.write_text(new_text)
+            print(f"  patched {path.relative_to(log_base)}: {count}x res")
+            total += count
+        if not total:
+            print(f"  [warn] no res match for {pattern}")
+        total_all += total
+    return total_all
+
+
+def patch_apk_res(apk_rel: str, tag: str, res_patches,
+                  build_root: Path) -> None:
+    """Resource-only APK patch inside the build tree (patch_root, both
+    modes) via tools/apkeditor.jar (decode -> regex edits on decoded files
+    -> build back). Unlike patch_apk_smali, no dex/smali is required, so
+    resource-only overlays (e.g. DevicesOverlay.apk) are covered. Entry-name
+    sets must match the original or the build fails fast; the stale oat/
+    next to the APK is dropped via drop_oat_next_to(). Missing APK only
+    warns. The work dir is wiped afterwards; NOTE the rebuild refreshes
+    signatures like every other APK edit (DSV neuters the checks)."""
+    apk_path = build_root / apk_rel
+    if not apk_path.is_file():
+        print(f"WARNING: {apk_rel} not found, skip APK res patching.\n")
+        return
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError("java not found: install a JRE for apkeditor (CI: default-jre-headless)")
+    apkeditor_jar = TOOLS_DIR / "apkeditor.jar"
+    if not apkeditor_jar.is_file():
+        raise RuntimeError(f"Missing tool jar: {apkeditor_jar}")
+    print(f"=== Res-patching {apk_path.name} (apkeditor) ===")
+    with zipfile.ZipFile(apk_path) as zin:
+        orig_entries = {i.filename for i in zin.infolist()}
+    work_root = Path(tempfile.mkdtemp(prefix=f"apkeditor-{tag}-"))
+    try:
+        run_logged([java, "-jar", str(apkeditor_jar), "d",
+                    "-i", str(apk_path), "-o", str(work_root), "-f"],
+                   f"apkeditor decode {apk_path.name}")
+        if not any(work_root.rglob("*.xml")):
+            raise RuntimeError(f"apkeditor produced no resources for {apk_path.name} "
+                               f"(it exits 0 even on failure)")
+        apply_res_file_patches(work_root, res_patches, work_root)
+        tmp = apk_path.with_name(apk_path.name + ".new")
+        if tmp.exists():
+            tmp.unlink()
+        run_logged([java, "-jar", str(apkeditor_jar), "b",
+                    "-i", str(work_root), "-o", str(tmp), "-f"],
+                   f"apkeditor build {apk_path.name}")
+        if not tmp.is_file() or tmp.stat().st_size == 0:
+            raise RuntimeError(f"apkeditor produced no output for {apk_path.name}")
+        with zipfile.ZipFile(tmp) as zout:
+            new_entries = {i.filename for i in zout.infolist()}
+        if new_entries != orig_entries:
+            raise RuntimeError(
+                f"apkeditor changed the entry set of {apk_path.name}: "
+                f"lost {sorted(orig_entries - new_entries)[:5]}, "
+                f"added {sorted(new_entries - orig_entries)[:5]}")
+        os.replace(tmp, apk_path)
+        print(f"APK res patching done: {apk_path.name} "
+              f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
+    drop_oat_next_to(apk_path, "patched")
+    print()
 
 
 def parse_ext4_rw(value: str, valid: List[str]) -> set:
@@ -3068,24 +3198,27 @@ def assemble_package(
 
 
 def create_recovery_zip(package_dir: Path, output_zip: Path) -> Path:
-    """Pack the assembled package/ into a ZIP with maximum DEFLATE compression
-    (level 9). The universal package is recovery-flashable (updater-script +
+    """Pack the assembled package/ into a ZIP with standard DEFLATE
+    compression (level 6). Level 9 is deliberately NOT used: CI re-archives
+    the artifact on upload anyway (archive-in-archive), so max compression
+    only burns build minutes for ~zero size win.
+    The universal package is recovery-flashable (updater-script +
     ARM update-binary already in META-INF); the fastboot-only package has no
     META-INF and is distributed as a plain archive (unzip + run install scripts).
     Sorted walk keeps the archive reproducible.
     """
-    print(f"=== Packing ZIP (deflate-9): {output_zip.name} ===")
+    print(f"=== Packing ZIP (deflate-6): {output_zip.name} ===")
     if output_zip.exists():
         output_zip.unlink()
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED,
-                          compresslevel=9, allowZip64=True) as z:
+                           allowZip64=True) as z:
         for root, dirs, files in os.walk(package_dir):
             dirs.sort()
             for name in sorted(files):
                 full = Path(root) / name
                 arc = full.relative_to(package_dir).as_posix()
                 z.write(full, arc,
-                        compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                        compress_type=zipfile.ZIP_DEFLATED)
     print(f"ZIP ready: {output_zip} "
           f"({output_zip.stat().st_size // 1024 // 1024}MB)\n")
     return output_zip
@@ -3352,6 +3485,16 @@ def main() -> None:
             FUNCTION_SELECT_OLD, FUNCTION_SELECT_NEW)],
         patch_root,
         array_patches=SETTINGS_ARRAY_PATCHES,
+    )
+
+    # Step 4g3: DevicesOverlay.apk resource patch (status_bar_padding_top
+    # 14.0px -> 25.0px). Always, both modes; in port mode the file arrives
+    # from stock via donors, so this runs after them. Drops the stale oat/
+    # next to the APK by itself.
+    patch_apk_res(
+        DEVICE_OVERLAY_APK, "devicesoverlay",
+        DEVICE_OVERLAY_RES_PATCHES,
+        patch_root,
     )
 
     # Step 4h: Move product/data-app/* into product/app/ on the build tree.
