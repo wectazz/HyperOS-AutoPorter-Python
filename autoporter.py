@@ -325,6 +325,55 @@ MIUI_SERVICES_AOD_CATCH_PATCHES = [
 # (apk/jar-relative rules built per target, basenames + both pkg forms).
 MIUIFREQUENTPHRASE_APK = "product/app/MIUIFrequentPhrase/MIUIFrequentPhrase.apk"
 SETTINGS_APK = "system_ext/priv-app/Settings/Settings.apk"
+# Settings.apk .array-data replacements (step 4g2, always, both modes).
+# Old blocks are matched by their 16 float values (as ints — robust to the
+# декомпилер's :array_NNN label numbering, which shifts between builds),
+# new blocks repeat a 4-value pattern x4. Hex without 0x prefix, lowercase.
+SETTINGS_ARRAY_GROUP1_OLD = [
+    ("3e4ccccd", "3d75c28f", "3f6147ae", "3ecccccd",
+     "3e99999a", "3e0f5c29", "3f0ccccd", "3f000000",
+     "0", "3f23d70a", "3f75c28f", "3f000000",
+     "3de147ae", "3e23d70a", "3f547ae1", "3ecccccd"),
+    ("3d8f5c29", "3e19999a", "3f4a3d71", "3f000000",
+     "3f1eb852", "3e570a3d", "3f2b851f", "3f000000",
+     "3d75c28f", "3e800000", "3f570a3d", "3f000000",
+     "0", "3e4ccccd", "3f47ae14", "3f000000"),
+    ("3f147ae1", "3e99999a", "3f3d70a4", "3ecccccd",
+     "3e8a3d71", "3e3851ec", "3f19999a", "3f000000",
+     "3f28f5c3", "3e851eb8", "3f1eb852", "3f000000",
+     "3df5c28f", "3e23d70a", "3f333333", "3f19999a"),
+]
+SETTINGS_ARRAY_GROUP1_NEW = (
+    ("3d4ccccd", "0.05f"), ("3e4ccccd", "0.2f"),
+    ("3dcccccd", "0.1f"), ("3f800000", "1.0f"),
+) * 4
+SETTINGS_ARRAY_GROUP2_OLD = [
+    ("3f800000", "3f666666", "3f70a3d7", "3f800000",
+     "3f800000", "3f570a3d", "3f63d70a", "3f800000",
+     "3f7851ec", "3f3ae148", "3f51eb85", "3f800000",
+     "3f23d70a", "3f266666", "3f7ae148", "3f800000"),
+    ("3f147ae1", "3f3d70a4", "3f800000", "3f800000",
+     "3f800000", "3f666666", "3f6e147b", "3f800000",
+     "3f3d70a4", "3f428f5c", "3f800000", "3f800000",
+     "3f7851ec", "3f451eb8", "3f570a3d", "3f800000"),
+    ("3f7ae148", "3f5c28f6", "3f666666", "3f800000",
+     "3f19999a", "3f3ae148", "3f7ae148", "3f800000",
+     "3f6b851f", "3f6e147b", "3f800000", "3f800000",
+     "3f0f5c29", "3f30a3d7", "3f800000", "3f800000"),
+]
+SETTINGS_ARRAY_GROUP2_NEW = (
+    ("3f333333", "0.7f"), ("3f4ccccd", "0.8f"),
+    ("3f2e147b", "0.68f"), ("3f4ccccd", "0.8f"),
+) * 4
+# (target basenames, old values, new (hex, comment) items). "*.smali" scans
+# every decoded dex dir since the owning class isn't pinned — the 16-value
+# match itself is the guard (accidental collisions are ~impossible).
+SETTINGS_ARRAY_PATCHES = (
+    [(["*.smali"], old, SETTINGS_ARRAY_GROUP1_NEW)
+     for old in SETTINGS_ARRAY_GROUP1_OLD]
+    + [(["*.smali"], old, SETTINGS_ARRAY_GROUP2_NEW)
+       for old in SETTINGS_ARRAY_GROUP2_OLD]
+)
 
 # init.rc tweak (step 4c3c, both modes, on patch_root): appended once to the
 # end of system/system/etc/init/hw/init.rc (SAR-nested, like the jars and
@@ -1902,6 +1951,62 @@ def insert_catch_handler(text: str, prev_exc: str, anchor_exc: str,
     return "".join(out), count
 
 
+ARRAY_VALUE_RX = re.compile(r"0[xX][0-9a-fA-F]+")
+
+
+def replace_array_data(text: str, old_hex, new_items) -> tuple:
+    """Replace `.array-data` blocks whose values (as ints — `0x0` and
+    `0x00000000` compare equal) exactly equal `old_hex`. The `.array-data`
+    and `.end array-data` lines are kept byte-identical; items are rewritten
+    with the file's own indent as `0x<hex>  # <comment>`. Labels above the
+    block (`:array_NNN`) are never matched, so renumbering between builds
+    doesn't matter. Blocks with non-hex body lines or a missing end marker
+    are left untouched. Returns (new_text, replaced_count)."""
+    old = tuple(int(x, 16) for x in old_hex)
+    lines = text.splitlines(keepends=True)
+    out: List[str] = []
+    count = 0
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if not line.strip().startswith(".array-data"):
+            out.append(line)
+            i += 1
+            continue
+        j = i + 1
+        vals: List[int] = []
+        ok = True
+        while j < n and lines[j].strip() != ".end array-data":
+            s = lines[j].strip()
+            if s == "":
+                j += 1
+                continue
+            m = ARRAY_VALUE_RX.search(lines[j])
+            if not m:
+                ok = False
+                break
+            vals.append(int(m.group(0), 16))
+            j += 1
+        if ok and j < n and tuple(vals) == old:
+            indent = ""
+            k = i + 1
+            while k < j:
+                if ARRAY_VALUE_RX.search(lines[k]):
+                    indent = lines[k][:len(lines[k]) - len(lines[k].lstrip())]
+                    break
+                k += 1
+            out.append(line)
+            for hx, comment in new_items:
+                out.append(f"{indent}0x{hx}  # {comment}\n")
+            out.append(lines[j])
+            count += 1
+            i = j + 1
+            continue
+        out.append(line)
+        i += 1
+    return "".join(out), count
+
+
 def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> dict:
     """Copy dsv/<key>/<dex>/*.smali into the matching decompiled dex dir, at the
     path from each file's own .class declaration. Classes already present in
@@ -2196,13 +2301,15 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
 
 
 def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
-                    build_root: Path) -> None:
+                    build_root: Path, array_patches=None) -> None:
     """Smali-patch one APK inside the build tree (patch_root, both modes)
     via tools/apkeditor.jar (decode -> patch smali -> build back): full
     decode with the internal dex lib (handles dex up to 042, unlike the
-    baksmali/smali jars), literal whole-file replaces like step 3e, then a
-    rebuild. Afterwards the oat/ dir next to the APK is dropped: dex was
-    rebuilt, so stale compiled code must not survive. Missing APK only warns.
+    baksmali/smali jars), literal whole-file replaces like step 3e plus
+    .array-data content replacements (matched by values, not :array_NNN
+    labels), then a rebuild. Afterwards the oat/ dir next to the APK is
+    dropped: dex was rebuilt, so stale compiled code must not survive.
+    Missing APK only warns.
     The work dir is wiped afterwards (decodes are huge); entry-name sets must
     match the original or the build fails fast.
     NOTE: like the jar rezip, the rebuild refreshes signatures; DSV neuters
@@ -2250,6 +2357,26 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                         continue
                     path.write_text(text.replace(old, new))
                     print(f"  patched {path.name}: {count}x replace")
+        # 2b. .array-data content replacements (values, not labels).
+        for basenames, old_hex, new_items in (array_patches or []):
+            total = 0
+            for base_name in basenames:
+                found = [p for d in dex_dirs for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    text = path.read_text()
+                    if ".array-data" not in text:
+                        continue
+                    new_text, count = replace_array_data(text, old_hex, new_items)
+                    if not count:
+                        continue
+                    path.write_text(new_text)
+                    print(f"  patched {path.name}: {count}x .array-data")
+                    total += count
+            if not total:
+                print(f"  [warn] no matching .array-data block (starts 0x{old_hex[0]})")
         # 3. rebuild into a temp file (atomic replace keeps the old APK on
         # failure).
         tmp = apk_path.with_name(apk_path.name + ".new")
@@ -3227,6 +3354,7 @@ def main() -> None:
         + [(["InputMethodFunctionSelectUtils.smali"],
             FUNCTION_SELECT_OLD, FUNCTION_SELECT_NEW)],
         patch_root,
+        array_patches=SETTINGS_ARRAY_PATCHES,
     )
 
     # Step 4h: Move product/data-app/* into product/app/ on the build tree.
