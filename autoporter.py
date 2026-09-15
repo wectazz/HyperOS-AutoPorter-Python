@@ -343,15 +343,16 @@ INIT_RC_APPEND = [
 ]
 INIT_RC_GUARD = "service animationfix"
 # About-phone overlay (step 4c3b, both modes, on patch_root): committed
-# about_phone_description/duchamp/ files copied into the build tree.
-# (source rel under the overlay dir, dest rel under patch_root,
-# hyper-version gate or None). COPY, not move — the overlay is repo content.
+# about_phone_description/duchamp/<hos3|hos4>/ files copied into the build
+# tree for the selected --hyper-version.
+# (source rel under the version dir, dest rel under patch_root).
+# COPY, not move — the overlay is repo content.
 ABOUT_PHONE_DIR = BASE_DIR / "about_phone_description" / "duchamp"
 ABOUT_PHONE_MOVES = [
     ("product/etc/device_info.json",
-     "product/etc/device_info.json", None),
+     "product/etc/device_info.json"),
     ("system/system/priv-app/HTMLViewer/HTMLViewer.apk",
-     "system/system/priv-app/HTMLViewer/HTMLViewer.apk", "hos3"),
+     "system/system/priv-app/HTMLViewer/HTMLViewer.apk"),
 ]
 
 
@@ -1383,20 +1384,19 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str) -> None:
 
 
 def apply_about_phone_description(build_root: Path, hyper_version: str) -> None:
-    """Copy the committed about_phone_description/duchamp/ overlay into the
-    build tree (patch_root, both modes): device_info.json -> product/etc/
-    always, HTMLViewer.apk -> system/system/priv-app/ only when hyper_version
-    is hos3. Copy (not move) with xattrs/symlinks via copy_file_preserve();
-    existing dests are replaced. Missing sources only warn."""
+    """Copy the committed about_phone_description/duchamp/<hyper_version>/
+    overlay into the build tree (patch_root, both modes): device_info.json
+    -> product/etc/ and HTMLViewer.apk -> system/system/priv-app/, both for
+    the selected version. Copy (not move) with xattrs/symlinks via
+    copy_file_preserve(); existing dests are replaced. Missing sources only
+    warn."""
     print("=== Applying about_phone_description overlay ===")
-    if not ABOUT_PHONE_DIR.is_dir():
-        print(f"  [warn] overlay dir not found: {ABOUT_PHONE_DIR}, skip\n")
+    overlay = ABOUT_PHONE_DIR / hyper_version
+    if not overlay.is_dir():
+        print(f"  [warn] overlay dir not found: {overlay}, skip\n")
         return
-    for src_rel, dst_rel, gate in ABOUT_PHONE_MOVES:
-        if gate is not None and gate != hyper_version:
-            print(f"  [skip] {src_rel} (needs {gate})")
-            continue
-        src, dst = ABOUT_PHONE_DIR / src_rel, build_root / dst_rel
+    for src_rel, dst_rel in ABOUT_PHONE_MOVES:
+        src, dst = overlay / src_rel, build_root / dst_rel
         if not (src.is_file() or src.is_symlink()):
             print(f"  [missing, skip] {src_rel}")
             continue
