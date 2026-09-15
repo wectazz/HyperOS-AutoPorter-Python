@@ -1219,8 +1219,9 @@ def flatten_pangu_system(product_dir: Path) -> None:
 
 def move_data_app_to_app(product_dir: Path) -> None:
     """Move <product>/data-app/* into <product>/app/, merging dirs
-    recursively (existing entries are replaced). Runs last, right before
-    the rebuild, so debloat/DSV/modded-apps results all end up in app/.
+    recursively (existing entries are replaced). data-app itself is kept
+    as an empty dir (never removed). Runs last, right before the rebuild,
+    so debloat/DSV/modded-apps results all end up in app/.
     No-op when data-app is absent."""
     src = product_dir / "data-app"
     if not src.is_dir():
@@ -1228,11 +1229,7 @@ def move_data_app_to_app(product_dir: Path) -> None:
         return
     print(f"=== Moving {src} into {product_dir / 'app'} ===")
     merge_tree_into(src, product_dir / "app")
-    try:
-        src.rmdir()  # now empty (best effort)
-    except OSError:
-        pass
-    print("data-app -> app move done.\n")
+    print("data-app -> app move done (data-app kept empty).\n")
 
 
 def apply_donor_files(stock_root: Path, port_root: Path) -> None:
