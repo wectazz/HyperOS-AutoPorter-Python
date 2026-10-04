@@ -704,11 +704,16 @@ def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
 SUPER_SPLIT_PARTS = 54
 
-# lpmake metadata headroom for tight super packing (see repack_super_image).
+# lpmake metadata headroom for super packing (see repack_super_image).
 # Proven minimum on tools/lpmake (android-15 line): total+983040 bytes fails
 # with exit 70 "Not enough space on device", total+1MB builds cleanly —
 # verified locally, incl. the real 9-partition layout.
 SUPER_METADATA_RESERVE_MB = 1
+
+# Super size stepping (DNA-style): super is rounded UP to whole steps, so
+# free space remains inside the groups (for COW/OTA) instead of tight
+# packing with ~0 free. E.g. images summing to 8.62GB -> 9.0GB super.
+SUPER_SIZE_STEP_MB = 512
 
 # EROFS compressor for rebuilt images. Target kernel is 6.1 (duchamp), so
 # MicroLZMA ("lzma,9", the maximum 1.7.1 offers) would also be readable, but
@@ -2266,7 +2271,13 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                         continue
                     path.write_text(new_text)
                     print(f"  patched {path.name}: +new method {method_frag}")
-        # 3e. literal string replacements across whole files
+        # 3e. literal string replacements across whole files.
+        # Paired rules (e.g. Baidu->Gboard dotted + slashed forms) target
+        # the same files, but a file normally holds only one form — so a
+        # single miss is the normal case, not a warning. Warn only when NO
+        # rule hit the file at all.
+        replace_hit: set = set()
+        replace_miss: dict = {}
         for basenames, old, new in (replace_patches or []):
             for base_name in basenames:
                 found = [p for d in dex_out_dirs.values() for p in d.rglob(base_name)]
@@ -2277,10 +2288,15 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                     text = path.read_text()
                     count = text.count(old)
                     if not count:
-                        print(f"  [warn] no target string in {path.relative_to(out_root)}")
+                        replace_miss.setdefault(path, []).append(old)
                         continue
                     path.write_text(text.replace(old, new))
+                    replace_hit.add(path)
                     print(f"  patched {path.name}: {count}x {old} -> {new}")
+        for path in sorted(replace_miss):
+            if path not in replace_hit:
+                olds = ", ".join(replace_miss[path])
+                print(f"  [warn] no target string in {path.relative_to(out_root)} ({olds})")
         # 3f. .catch handler insertions (e.g. fullscreen-AOD
         # NoSuchElementException catch after the SecurityException one).
         for basenames, prev_exc, anchor_exc, new_exc in (catch_patches or []):
@@ -2387,7 +2403,11 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
         if not dex_dirs or not any(d.rglob("*.smali") for d in dex_dirs):
             raise RuntimeError(f"apkeditor produced no smali for {apk_path.name} "
                                f"(it exits 0 even on failure)")
-        # 2. literal whole-file replaces (same semantics as step 3e).
+        # 2. literal whole-file replaces (same semantics as step 3e:
+        # warn only when no rule hit the file at all — paired dotted +
+        # slashed rules normally match just one form per file).
+        replace_hit: set = set()
+        replace_miss: dict = {}
         for basenames, old, new in replace_patches:
             for base_name in basenames:
                 found = [p for d in dex_dirs for p in d.rglob(base_name)]
@@ -2398,10 +2418,15 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                     text = path.read_text()
                     count = text.count(old)
                     if not count:
-                        print(f"  [warn] no target string in {path.relative_to(work_root)}")
+                        replace_miss.setdefault(path, []).append(old)
                         continue
                     path.write_text(text.replace(old, new))
+                    replace_hit.add(path)
                     print(f"  patched {path.name}: {count}x replace")
+        for path in sorted(replace_miss):
+            if path not in replace_hit:
+                olds = ", ".join(replace_miss[path])
+                print(f"  [warn] no target string in {path.relative_to(work_root)} ({olds})")
         # 2b. .array-data content replacements (values, not labels).
         for basenames, old_hex, new_items in (array_patches or []):
             total = 0
@@ -2507,7 +2532,27 @@ def patch_apk_res(apk_rel: str, tag: str, res_patches,
         if not any(work_root.rglob("*.xml")):
             raise RuntimeError(f"apkeditor produced no resources for {apk_path.name} "
                                f"(it exits 0 even on failure)")
-        apply_res_file_patches(work_root, res_patches, work_root)
+        res_total = apply_res_file_patches(work_root, res_patches, work_root)
+        # Diagnostic: when nothing matched, show the actual
+        # status_bar_padding_top lines (if the tag exists with a different
+        # value) so the next run's rule can be adjusted to reality.
+        if not res_total:
+            shown = 0
+            for path in sorted(work_root.rglob("dimen.xml")):
+                if shown >= 5:
+                    break
+                try:
+                    text = path.read_text()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for line in text.splitlines():
+                    if "status_bar_padding_top" in line:
+                        print(f"  [res-info] {path.relative_to(work_root)}: {line.strip()[:120]}")
+                        shown += 1
+                        if shown >= 5:
+                            break
+            if not shown:
+                print("  [res-info] no status_bar_padding_top tag in any dimen.xml")
         tmp = apk_path.with_name(apk_path.name + ".new")
         if tmp.exists():
             tmp.unlink()
@@ -3028,15 +3073,18 @@ def repack_super_image(
                 f"{part_name}_b:none:0:{group_b}",
             ])
 
-    # Tight packing: groups fit the partitions exactly, super weighs what
-    # the images weigh plus the lpmake metadata minimum only. No snapshot
-    # padding, no GiB rounding. Both slot groups get the same size (mirrors
-    # stock layout); with --virtual-ab the groups may overcommit the
-    # physical super size via copy-on-write. Explicit 4096 device alignment:
-    # without it lpmake pads partitions to ~1MB each and tight groups fail
-    # with exit 70 on the last partition (proven locally).
-    group_size = total_size
-    super_size = total_size + SUPER_METADATA_RESERVE_MB * 1024 * 1024
+    # Stepped packing (DNA-style): super is rounded UP to whole
+    # SUPER_SIZE_STEP_MB steps, so free space remains inside the groups
+    # (for COW/OTA) instead of tight packing. Groups keep the same 1MB
+    # metadata delta as before (proven minimum), both slot groups get the
+    # same size (mirrors stock layout); with --virtual-ab the groups may
+    # overcommit the physical super size via copy-on-write. Explicit 4096
+    # device alignment: without it lpmake pads partitions to ~1MB each and
+    # tight groups fail with exit 70 on the last partition (proven locally).
+    reserve = SUPER_METADATA_RESERVE_MB * 1024 * 1024
+    step = SUPER_SIZE_STEP_MB * 1024 * 1024
+    super_size = ((total_size + reserve + step - 1) // step) * step
+    group_size = super_size - reserve
 
     cmd = [
         lpmake_bin,
@@ -3061,6 +3109,9 @@ def repack_super_image(
     print(
         f"Executing lpmake with Virtual A/B support (--virtual-ab, groups={group_a}/{group_b}, super_size={super_size})..."
     )
+    free_inside = group_size - total_size
+    print(f"Images sum: {total_size} bytes, "
+          f"free inside groups: {free_inside} bytes (~{free_inside // 1024 // 1024}MB)")
     # Fail fast with a clear message when the disk cannot fit the output:
     # lpmake itself reports this only as a cryptic
     # `sparse_file_write failed (error code -22)`.

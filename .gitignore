@@ -32,6 +32,11 @@ binary/
 /packer.py
 /rom.py
 
+# on-device kitchens (ARM binaries + phone tools, reference only,
+# must never be committed)
+dna/
+UKA_5.39_64_magisk_sign/
+
 # flash template IS committed — re-include its payload despite the rules above
 !template/**/*.img
 !template/**/*.zip
