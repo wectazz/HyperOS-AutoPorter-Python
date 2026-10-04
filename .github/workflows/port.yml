@@ -66,6 +66,14 @@ on:
         options:
           - "true"
           - "false"
+      dialer:
+        description: 'Install MIUI dialer (global only: dialer_gl set on EU, mi_ext apps elsewhere; CN skips)'
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - "yes"
+          - "no"
       ext4_rw:
         description: 'Comma-separated partitions to rebuild as ext4 RW (all/none)'
         required: false
@@ -116,7 +124,7 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          sudo python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }} --density ${{ inputs.density }} --aod-fullscreen ${{ inputs.aod_fullscreen }}
+          sudo python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }} --density ${{ inputs.density }} --aod-fullscreen ${{ inputs.aod_fullscreen }} --dialer ${{ inputs.dialer }}
 
       - name: Upload build sidecars (debug on failure)
         if: failure()

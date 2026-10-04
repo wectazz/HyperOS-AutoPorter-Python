@@ -384,6 +384,24 @@ MIUI_SERVICES_AOD_CATCH_PATCHES = [
 # (apk/jar-relative rules built per target, basenames + both pkg forms).
 MIUIFREQUENTPHRASE_APK = "product/app/MIUIFrequentPhrase/MIUIFrequentPhrase.apk"
 SETTINGS_APK = "system_ext/priv-app/Settings/Settings.apk"
+# MIUI dialer (global firmwares only — CN ships it already; gated by
+# --dialer). EU firmwares carry no dialer in mi_ext, so the committed
+# dialer_gl/ set is used; other global regions move the apps from the
+# port/stock mi_ext instead. Either way GmsConfigOverlayComms.apk gets
+# its Google dialer/contacts/messages strings repointed at the MIUI apps.
+DIALER_GL_DIR = BASE_DIR / "dialer_gl"
+DIALER_GL_APPS = ["InCallUI", "MIUIContactsTGlobal", "MiuiMmsGlobal"]
+DIALER_PRIV_APP = "product/priv-app"
+DIALER_MI_EXT_PRIV_APP = "mi_ext/product/priv-app"
+GMS_OVERLAY_APK = "product/overlay/GmsConfigOverlayComms.apk"
+GMS_DIALER_RES_PATCHES = [
+    ("strings.xml",
+     r"com\.google\.android\.dialer", "com.android.contacts"),
+    ("strings.xml",
+     r"com\.google\.android\.contacts", "com.android.contacts"),
+    ("strings.xml",
+     r"com\.google\.android\.apps\.messaging", "com.android.mms"),
+]
 # DevicesOverlay.apk resource patch (step 4g3, always, both modes):
 # status_bar_padding_top 14.0px -> 25.0px in any decoded xml carrying it
 # (the value lives in dimen-port variants, not plain dimen.xml, so the glob
@@ -1796,6 +1814,72 @@ def apply_device_features_overlay(build_root: Path) -> None:
         dst.unlink()
     shutil.copy2(src, dst)
     print(f"  copied duchamp/duchamp.xml -> {DEVICE_FEATURES_XML}\n")
+
+
+def _normalize_moved_perms(root: Path) -> None:
+    """chmod-only normalize (dirs 0755, files 0644, symlinks untouched) for
+    repo-overlay copies like dialer_gl/ (checkouts carry arbitrary modes)."""
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames:
+            p = Path(dirpath) / name
+            try:
+                if stat.S_ISLNK(os.lstat(p).st_mode):
+                    continue
+            except OSError:
+                continue
+            os.chmod(p, 0o755)
+        for name in filenames:
+            p = Path(dirpath) / name
+            try:
+                if not stat.S_ISREG(os.lstat(p).st_mode):
+                    continue
+            except OSError:
+                continue
+            os.chmod(p, 0o644)
+
+
+def apply_dialer(build_root: Path, region: str) -> None:
+    """MIUI dialer on the build tree (patch_root, both modes): CN firmwares
+    already ship it (skipped), EU firmwares take the committed dialer_gl/
+    set (absent from EU mi_ext), other global regions move the apps from
+    mi_ext/product/priv-app. Then GmsConfigOverlayComms.apk strings are
+    repointed from Google to MIUI apps. Missing sources only warn."""
+    if region == "CN":
+        print("CN firmware already ships the MIUI dialer, skip dialer.\n")
+        return
+    if region == "EU":
+        print("=== Applying dialer_gl overlay (EU mi_ext has no dialer) ===")
+        if not DIALER_GL_DIR.is_dir():
+            print(f"  [warn] dialer set not found: {DIALER_GL_DIR}, skip\n")
+            return
+        for name in DIALER_GL_APPS:
+            src, dst = DIALER_GL_DIR / name, build_root / DIALER_PRIV_APP / name
+            if not src.is_dir() or src.is_symlink():
+                print(f"  [missing, skip] dialer_gl/{name}")
+                continue
+            copy_tree_into(src, dst)
+            _normalize_moved_perms(dst)
+            print(f"  copied dialer_gl/{name} -> {DIALER_PRIV_APP}/{name}")
+            for apk in sorted(dst.rglob("*.apk")):
+                if apk.is_file() and not apk.is_symlink():
+                    drop_oat_next_to(apk, "dialer")
+        print()
+    else:
+        print(f"=== Moving dialer apps from mi_ext (global {region}) ===")
+        moved, missing = 0, 0
+        for name in DIALER_GL_APPS:
+            if _move_fs_entry(build_root,
+                              f"{DIALER_MI_EXT_PRIV_APP}/{name}",
+                              f"{DIALER_PRIV_APP}/{name}"):
+                moved += 1
+            else:
+                missing += 1
+        print(f"Dialer moves done: moved {moved}, missing {missing}.\n")
+    patch_apk_res(
+        GMS_OVERLAY_APK, "gmsdialer",
+        GMS_DIALER_RES_PATCHES,
+        build_root,
+    )
 
 
 def patch_device_features(build_root: Path, aod_fullscreen: str) -> None:
@@ -3541,6 +3625,14 @@ def main() -> None:
              "product/etc/device_features/duchamp.xml + NoSuchElementException "
              "catch in miui-services.jar) (default: true)",
     )
+    parser.add_argument(
+        "--dialer",
+        choices=["yes", "no"],
+        default="no",
+        help="Install the MIUI dialer (global firmwares only: dialer_gl/ set "
+              "on EU, mi_ext apps elsewhere; CN already ships it and skips; "
+              "also repoints GmsConfigOverlayComms.apk strings) (default: no)",
+    )
     args = parser.parse_args()
     # Firmware region: port mode reads the PORT firmware region, mod mode
     # the STOCK one (CN = China, anything else = global).
@@ -3552,7 +3644,7 @@ def main() -> None:
           f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
            f"decrypt-data: {args.decrypt_data}, ext4-rw: {args.ext4_rw}, "
            f"ext4-free: {args.ext4_free_mb}MB, density: {args.density}, "
-           f"aod-fullscreen: {args.aod_fullscreen})...\n")
+           f"aod-fullscreen: {args.aod_fullscreen}, dialer: {args.dialer})...\n")
 
     # Step 1: Tools Setup
     setup_tools()
@@ -3641,6 +3733,13 @@ def main() -> None:
     # file arrives from stock via donors).
     apply_device_features_overlay(patch_root)
     patch_device_features(patch_root, args.aod_fullscreen)
+
+    # Step 4c5b: MIUI dialer (global firmwares only, gated by --dialer;
+    # CN already ships it). Both modes, before debloat+rebuild.
+    if args.dialer == "yes":
+        apply_dialer(patch_root, region)
+    else:
+        print("MIUI dialer skipped (--dialer no).\n")
 
     # Step 4c6: hos3->hos4 vibrator fix on the stock tree (vintf XML + hw
     # service binary; odm exists only in stock). Port mode only, not
