@@ -23,6 +23,9 @@ smali_work/
 # local SDK bundle (878MB, too big for git, not part of the build)
 otatools/
 
+# downloaded modded-apps sets (release zips, re-downloaded every run)
+moddedapps_hos4_gl/
+
 # UnpackerSuper reference bundle + review copies (on-device ARM scripts,
 # must never be committed)
 binary/

@@ -24,6 +24,7 @@ BASE_DIR = Path(__file__).parent.resolve()
 TOOLS_DIR = BASE_DIR / "tools"
 MODDED_HOS3_DIR = BASE_DIR / "moddedapps_hos3"
 MODDED_HOS4_DIR = BASE_DIR / "moddedapps_hos4"
+MODDED_HOS4_GL_DIR = BASE_DIR / "moddedapps_hos4_gl"
 EXTRACTED_STOCK_DIR = BASE_DIR / "extracted_stock"
 EXTRACTED_PORT_DIR = BASE_DIR / "extracted_port"
 UNPACKED_STOCK_DIR = BASE_DIR / "unpacked_stock"
@@ -50,13 +51,49 @@ HOS4_MOD_URL = (
     "https://github.com/wectazz/HyperOS-AutoPorter-Python/releases/download/"
     "modded-apps/moddedapps_hos4.zip"
 )
+HOS4_GL_MOD_URL = (
+    "https://github.com/wectazz/HyperOS-AutoPorter-Python/releases/download/"
+    "modded-apps/moddedapps_hos4_gl.zip"
+)
 
 # Modded apps sets per HyperOS version: (download_url, output_dir, archive_name).
 # Hosted as release assets on GitHub (direct links, no auth, no quotas).
 MODDED_APPS = {
     "hos3": (HOS3_MOD_URL, MODDED_HOS3_DIR, "moddedapps_hos3"),
     "hos4": (HOS4_MOD_URL, MODDED_HOS4_DIR, "moddedapps_hos4"),
+    "hos4_gl": (HOS4_GL_MOD_URL, MODDED_HOS4_GL_DIR, "moddedapps_hos4_gl"),
 }
+
+
+def select_modded_apps(hyper_version: str, region: str) -> tuple:
+    """Pick the modded-apps set for a HyperOS version + firmware region:
+    global hos4 takes the hos4_gl set, everything else the version set.
+    A global firmware on a version without a gl set (hos3) falls back to
+    the version set with a warning."""
+    if hyper_version == "hos4" and region != "CN":
+        print("Global firmware: using moddedapps_hos4_gl set")
+        return MODDED_APPS["hos4_gl"]
+    if hyper_version != "hos4" and region != "CN":
+        print(f"  [warn] no global mod set for {hyper_version}, "
+              f"using {hyper_version} set")
+    return MODDED_APPS[hyper_version]
+
+
+# Firmware region codes: 2 letters before the trailing XM in the OS version
+# (e.g. OS3.0.304.0.WNLCNXM -> CN, OS4.0.6.0.XPSEUXM -> EU). CN = China,
+# anything else (MI/EU/RU/ID/...) = global. Matched against the OTA URL
+# or file name alike.
+REGION_VERSION_RE = re.compile(r"OS\d[\d.]*\.[A-Z]*([A-Z]{2})XM")
+
+
+def detect_region_code(source: str) -> str:
+    """Return the 2-letter firmware region code from an OTA URL/filename.
+    Unparseable sources fall back to CN (status quo) with a warning."""
+    m = REGION_VERSION_RE.search(source)
+    if not m:
+        print(f"  [warn] cannot detect region in {source}, assume CN")
+        return "CN"
+    return m.group(1)
 # Target Partition lists
 STOCK_PARTITIONS = ["odm", "vendor", "odm_dlkm", "system_dlkm", "vendor_dlkm"]
 PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
@@ -740,9 +777,9 @@ def make_executable(path: Path) -> None:
 def setup_tools() -> None:
     """Prepare environment and ensure tools in tools/ directory are executable."""
     print("=== Step 1: Preparing Environment and Tools ===")
-    for folder in [TOOLS_DIR, MODDED_HOS3_DIR, MODDED_HOS4_DIR, EXTRACTED_STOCK_DIR,
-                   EXTRACTED_PORT_DIR, UNPACKED_STOCK_DIR, UNPACKED_PORT_DIR,
-                   PORT_META_DIR]:
+    for folder in [TOOLS_DIR, MODDED_HOS3_DIR, MODDED_HOS4_DIR, MODDED_HOS4_GL_DIR,
+                   EXTRACTED_STOCK_DIR, EXTRACTED_PORT_DIR, UNPACKED_STOCK_DIR,
+                   UNPACKED_PORT_DIR, PORT_META_DIR]:
         folder.mkdir(parents=True, exist_ok=True)
 
     # Add tools/ to system PATH
@@ -1202,25 +1239,40 @@ def drop_oat_next_to(apk_path: Path, reason: str = "modified") -> bool:
     return False
 
 
-def apply_modded_apps(mod_dir: Path, unpacked_root: Path) -> None:
+def apply_modded_apps(mod_dir: Path, unpacked_root: Path,
+                      fallback_root: Path | None = None) -> None:
     """Overlay the modded-apps set onto an unpacked tree: each top-level
     partition dir (product/, system/, system_ext/, ...) merges recursively
     into the same-named unpacked partition, modded files replacing stock
     ones (system/ keeps its nested system/ level — both sides mirror it).
-    Port mode targets the port tree, mod mode the stock tree. Missing
-    partition dirs on either side only warn."""
+    Port mode targets the port tree, mod mode the stock tree. A partition
+    dir missing in the target (e.g. vendor/, which lives only in the stock
+    tree in port mode) falls back to fallback_root when given there.
+    Missing partition dirs on both sides only warn."""
     print(f"=== Applying modded apps from {mod_dir} into {unpacked_root} ===")
     if not mod_dir.is_dir():
         print(f"  [warn] modded apps dir not found: {mod_dir}, skip\n")
         return
+
+    def resolve(part_name: str) -> Path | None:
+        dest = unpacked_root / part_name
+        if dest.is_dir():
+            return dest
+        if fallback_root is not None:
+            fb = fallback_root / part_name
+            if fb.is_dir():
+                print(f"  [fallback] {part_name}/ -> {fallback_root}")
+                return fb
+        return None
+
     applied, missing = 0, 0
     for part in sorted(mod_dir.iterdir()):
         if part.is_symlink() or not part.is_dir():
             print(f"  [warn, skip] unexpected top-level entry: {part.name}")
             missing += 1
             continue
-        dest = unpacked_root / part.name
-        if not dest.is_dir():
+        dest = resolve(part.name)
+        if dest is None:
             print(f"  [missing, skip] no such partition in target tree: {part.name}/")
             missing += 1
             continue
@@ -1233,10 +1285,13 @@ def apply_modded_apps(mod_dir: Path, unpacked_root: Path) -> None:
     for part in sorted(mod_dir.iterdir()):
         if part.is_symlink() or not part.is_dir():
             continue
+        dest_root = resolve(part.name)
+        if dest_root is None:
+            continue
         for apk in sorted(part.rglob("*.apk")):
             if apk.is_symlink() or not apk.is_file():
                 continue
-            dest_apk = unpacked_root / part.name / apk.relative_to(part)
+            dest_apk = dest_root / apk.relative_to(part)
             if dest_apk.is_file() or dest_apk.is_symlink():
                 if drop_oat_next_to(dest_apk, "overlaid"):
                     oat_dropped += 1
@@ -3353,6 +3408,11 @@ def main() -> None:
              "catch in miui-services.jar) (default: true)",
     )
     args = parser.parse_args()
+    # Firmware region: port mode reads the PORT firmware region, mod mode
+    # the STOCK one (CN = China, anything else = global).
+    region = detect_region_code(PORT_URL if args.mode == "port" else STOCK_URL)
+    print(f"Firmware region: {region} "
+          f"({'China' if region == 'CN' else 'global'})")
     print(f"Starting HyperOS AutoPorter Workflow (mode: {args.mode}, "
           f"HyperOS version: {args.hyper_version}, "
           f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
@@ -3363,8 +3423,9 @@ def main() -> None:
     # Step 1: Tools Setup
     setup_tools()
 
-    # Step 2: Download & Extract Modded Apps for the selected HyperOS version
-    mod_url, mod_dir, mod_name = MODDED_APPS[args.hyper_version]
+    # Step 2: Download & Extract Modded Apps for the selected HyperOS
+    # version + firmware region (global hos4 takes the hos4_gl set).
+    mod_url, mod_dir, mod_name = select_modded_apps(args.hyper_version, region)
     download_and_extract_mod(mod_url, mod_dir, mod_name)
 
     # Step 3: Download Stock & Port Firmwares with Strict Memory Cleanups.
@@ -3404,8 +3465,10 @@ def main() -> None:
 
         # Step 4c2: Overlay the modded-apps set onto the port tree (modded
         # files replace stock/port ones; runs before debloat so oat strips
-        # and deletions apply to the final content).
-        apply_modded_apps(mod_dir, UNPACKED_PORT_DIR)
+        # and deletions apply to the final content). Stock-only partitions
+        # from the set (e.g. vendor/ with v4a) fall back to the stock tree.
+        apply_modded_apps(mod_dir, UNPACKED_PORT_DIR,
+                           fallback_root=UNPACKED_STOCK_DIR)
 
         # Tree carrying the build forward (debloat + DSV + rebuild source).
         patch_root = UNPACKED_PORT_DIR
