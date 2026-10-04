@@ -266,8 +266,30 @@ MI_EXT_PRODUCT_MOVES = [
 ]
 # Nested dirs dropped from the mi_ext tree (never baked into mi_ext.img).
 MI_EXT_DROP_DIRS = ["mi_ext/system", "mi_ext/system_ext", "mi_ext/product/app"]
-# GMS permission XML removed from product (both modes, not debloat-gated).
+# GMS permission XML removed from product on CN firmwares only (both modes,
+# not debloat-gated; global firmwares keep it).
 PRODUCT_GMS_PERMISSION = "product/etc/permissions/cn.google.services.xml"
+# Global firmwares only: named entries moved from mi_ext/product/* into
+# product/* ((mi_ext source dir, product dest dir, [names]) — files are
+# moved, dirs merged recursively). CN firmwares keep MI_EXT_PRODUCT_MOVES.
+MI_EXT_GLOBAL_DIR_MOVES = [
+    ("mi_ext/product/app", "product/app",
+     ["Gemini_arm64", "IFAAService", "SoterService", "XiaomiInCallUI"]),
+    ("mi_ext/product/data-app", "product/data-app",
+     ["GlobalWPSLITE", "MiuiCalendarGlobal", "MIUICompassGlobal",
+      "XMRemoteController"]),
+    ("mi_ext/product/priv-app", "product/priv-app",
+     ["AndroidSystemIntelligence_Features_arm64", "CotaService",
+      "CrossDeviceServices", "PrivateComputeServices_arm64",
+      "SearchSelector"]),
+    ("mi_ext/product/etc", "product/etc",
+     ["ecc_list.xml", "vendor_miui.xml", "miext_removable_apk_info.xml",
+      "default-permissions", "permissions", "sysconfig", "cust_features"]),
+    ("mi_ext/product", "product",
+     ["framework", "opcust", "overlay"]),
+]
+# Removed from product/overlay after the mi_ext overlay move (global only).
+PRODUCT_TELEPHONY_OVERLAY = "product/overlay/MiuiTelephonyResCustOverlay.apk"
 
 # device_features patch (step 4c5, both modes, on patch_root): applies the
 # duchamp_mod.xml tweaks to product/etc/device_features/duchamp.xml.
@@ -1485,13 +1507,86 @@ def _patch_mi_ext_build_prop(build_root: Path) -> None:
     print(f"  moved {MI_EXT_UNINSTALL_FLAG}={flag_value} -> product/etc/build.prop")
 
 
-def apply_mi_ext_tweaks(build_root: Path, hyper_version: str) -> None:
+def _drop_emptied_parents(src_parent: Path, stop: Path) -> None:
+    """rmdir src_parent up towards stop while empty (best effort)."""
+    parent = src_parent
+    while parent == stop or stop in parent.parents:
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        if parent == stop:
+            break
+        parent = parent.parent
+
+
+def _move_fs_entry(build_root: Path, src_rel: str, dst_rel: str) -> bool:
+    """Move one file/symlink/dir from the build tree onto its dest: files
+    via move_file_preserve(), dirs merged recursively (existing dest dirs
+    are merged, missing dests are plain moves). Stale oat/ next to a
+    moved-in APK is dropped. Returns False (with a warning) when the
+    source is absent."""
+    src, dst = build_root / src_rel, build_root / dst_rel
+    if src.is_symlink() or src.is_file():
+        move_file_preserve(src, dst)
+    elif src.is_dir() and not src.is_symlink():
+        if dst.is_symlink() or (dst.exists() and not dst.is_dir()):
+            dst.unlink()
+        if dst.is_dir() and not dst.is_symlink():
+            merge_tree_into(src, dst)
+            try:
+                src.rmdir()  # now empty (best effort)
+            except OSError:
+                pass
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+    else:
+        print(f"  [missing, skip] {src_rel}")
+        return False
+    print(f"  moved {src_rel} -> {dst_rel}")
+    if dst.is_file() and dst.suffix == ".apk":
+        drop_oat_next_to(dst, "moved")
+    elif dst.is_dir():
+        for apk in sorted(dst.rglob("*.apk")):
+            if apk.is_file() and not apk.is_symlink():
+                drop_oat_next_to(apk, "moved")
+    _drop_emptied_parents(src.parent, build_root / "mi_ext" / "product")
+    return True
+
+
+def apply_mi_ext_global_moves(build_root: Path) -> None:
+    """Global firmwares only: move mi_ext/product content (apps, configs,
+    framework/opcust/overlay) into product/, then drop the telephony
+    cust overlay that the moved overlays replace. Missing sources only
+    warn — OTAs differ between builds."""
+    print("=== Applying mi_ext global moves ===")
+    moved, missing = 0, 0
+    for src_dir_rel, dst_dir_rel, names in MI_EXT_GLOBAL_DIR_MOVES:
+        for name in names:
+            if _move_fs_entry(build_root,
+                              f"{src_dir_rel}/{name}", f"{dst_dir_rel}/{name}"):
+                moved += 1
+            else:
+                missing += 1
+    tele = build_root / PRODUCT_TELEPHONY_OVERLAY
+    if tele.is_file() or tele.is_symlink():
+        tele.unlink()
+        print(f"  removed {PRODUCT_TELEPHONY_OVERLAY}")
+    else:
+        print(f"  [missing, skip] {PRODUCT_TELEPHONY_OVERLAY}")
+    print(f"Global moves done: moved {moved}, missing {missing}.\n")
+
+
+def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
+                        region: str) -> None:
     """mi_ext + product permission tweaks on the build tree (patch_root, so
     both modes): mi_ext build.prop edits, moves of uninstall blobs from the
-    nested mi_ext/product/ into product/, removal of mi_ext/system{,_ext},
-    and removal of the GMS permission XML from product. Missing sources only
-    warn — OTAs differ between builds."""
-    print("=== Applying mi_ext tweaks ===")
+    nested mi_ext/product/ into product/, global mi_ext/product content
+    moves (global firmwares only), removal of mi_ext/system{,_ext}, and
+    removal of the GMS permission XML from product (CN firmwares only).
+    Missing sources only warn — OTAs differ between builds."""
+    print(f"=== Applying mi_ext tweaks (region: {region}) ===")
     mi_ext = build_root / "mi_ext"
     if not mi_ext.is_dir():
         print("  [warn] no mi_ext/ in build tree, skip mi_ext tweaks")
@@ -1508,16 +1603,9 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str) -> None:
             move_file_preserve(src, dst)
             print(f"  moved {src_rel} -> {dst_rel}")
             # drop emptied parents up to mi_ext/product (best effort)
-            parent = src.parent
-            stop = build_root / "mi_ext" / "product"
-            while parent == stop or stop in parent.parents:
-                try:
-                    parent.rmdir()
-                except OSError:
-                    break
-                if parent == stop:
-                    break
-                parent = parent.parent
+            _drop_emptied_parents(src.parent, build_root / "mi_ext" / "product")
+        if region != "CN":
+            apply_mi_ext_global_moves(build_root)
         for rel in MI_EXT_DROP_DIRS:
             target = build_root / rel
             if target.is_dir() and not target.is_symlink():
@@ -1528,12 +1616,15 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str) -> None:
                 print(f"  removed {rel}")
             else:
                 print(f"  [missing, skip] {rel}/")
-    gms = build_root / PRODUCT_GMS_PERMISSION
-    if gms.is_file() or gms.is_symlink():
-        gms.unlink()
-        print(f"  removed {PRODUCT_GMS_PERMISSION}")
+    if region == "CN":
+        gms = build_root / PRODUCT_GMS_PERMISSION
+        if gms.is_file() or gms.is_symlink():
+            gms.unlink()
+            print(f"  removed {PRODUCT_GMS_PERMISSION}")
+        else:
+            print(f"  [missing, skip] {PRODUCT_GMS_PERMISSION}")
     else:
-        print(f"  [missing, skip] {PRODUCT_GMS_PERMISSION}")
+        print(f"  [skip] {PRODUCT_GMS_PERMISSION} kept on global firmware")
     print()
 
 
@@ -3485,7 +3576,7 @@ def main() -> None:
     # product/, nested dir drops) + product GMS permission removal. Both
     # modes (mi_ext is the port's in port mode, the stock's in mod mode).
     # Runs before debloat so deletions apply to the final content.
-    apply_mi_ext_tweaks(patch_root, args.hyper_version)
+    apply_mi_ext_tweaks(patch_root, args.hyper_version, region)
 
     # Step 4c3b: about_phone_description overlay (device_info.json always,
     # HTMLViewer.apk only on hos3) onto the build tree. Both modes, before
