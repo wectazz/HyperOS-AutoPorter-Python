@@ -1773,12 +1773,38 @@ def _ensure_xml_after(lines: List[str], anchors: List[str], new_line: str) -> bo
     return False
 
 
+# Committed device_features mod reference (copied over the donor file on
+# every build, both modes, any region — patch_device_features() then
+# enforces the per-run choices like --aod-fullscreen on top of it).
+DUCHAMP_OVERLAY_DIR = BASE_DIR / "duchamp"
+
+
+def apply_device_features_overlay(build_root: Path) -> None:
+    """Copy duchamp/duchamp.xml over product/etc/device_features/duchamp.xml
+    (replacing the stock donor copy). Missing overlay only warns — the
+    donor file is kept and patch_device_features() still applies."""
+    print("=== Applying duchamp device_features overlay ===")
+    src = DUCHAMP_OVERLAY_DIR / "duchamp.xml"
+    dst = build_root / DEVICE_FEATURES_XML
+    if not src.is_file():
+        print(f"  [warn] overlay not found: {src}, keep donor file\n")
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_dir() and not dst.is_symlink():
+        shutil.rmtree(dst)
+    elif dst.exists() or dst.is_symlink():
+        dst.unlink()
+    shutil.copy2(src, dst)
+    print(f"  copied duchamp/duchamp.xml -> {DEVICE_FEATURES_XML}\n")
+
+
 def patch_device_features(build_root: Path, aod_fullscreen: str) -> None:
     """Apply the duchamp_mod.xml tweaks to product/etc/device_features/
     duchamp.xml on the build tree (patch_root, both modes — in port mode the
     file arrives via donors, so this runs after them). support_aod_fullscreen
     follows aod_fullscreen (yaml true/false), the rest is fixed: new
-    support_aod_aon/screen_enhance/AI_display keys, keycode_goto flips,
+    support_aod_aon/doze/BlanksAfterDoze/notification_animate keys,
+    screen_enhance/AI_display keys, keycode_goto flips,
     90Hz in fpsList, defaultFps 120. Missing file only warns; re-runs are
     idempotent (values are set, inserts are skipped when the key exists)."""
     xml = build_root / DEVICE_FEATURES_XML
@@ -1801,6 +1827,23 @@ def patch_device_features(build_root: Path, aod_fullscreen: str) -> None:
                   [r'<bool name="support_aod">'])
     set_or_insert("bool", "support_aod_aon", "true",
                   [r'<bool name="support_aod_fullscreen">',
+                   r'<bool name="support_aod">'])
+    # Doze/AOD extras (from the duchamp/duchamp.xml mod reference).
+    set_or_insert("bool", "doze_display_state_supported", "true",
+                  [r'<bool name="support_aod_aon">',
+                   r'<bool name="support_aod_fullscreen">',
+                   r'<bool name="support_aod">'])
+    set_or_insert("bool", "doze_proximity_check_before_pulse_intent", "true",
+                  [r'<bool name="doze_display_state_supported">',
+                   r'<bool name="support_aod_aon">',
+                   r'<bool name="support_aod">'])
+    set_or_insert("bool", "config_displayBlanksAfterDoze", "false",
+                  [r'<bool name="doze_proximity_check_before_pulse_intent">',
+                   r'<bool name="doze_display_state_supported">',
+                   r'<bool name="support_aod">'])
+    set_or_insert("bool", "support_aod_notification_animate", "true",
+                  [r'<bool name="config_displayBlanksAfterDoze">',
+                   r'<bool name="doze_proximity_check_before_pulse_intent">',
                    r'<bool name="support_aod">'])
     # Keycode-goto flips (second aod_support_keycode_goto_dismiss only: the
     # first one is already true in stock, so only false->true is touched).
@@ -3592,9 +3635,11 @@ def main() -> None:
     # there touches build.prop).
     apply_build_prop_tweaks(patch_root, args.density)
 
-    # Step 4c5: device_features patch (AOD/display/fps tweaks from the mod
-    # file, fullscreen flag from --aod-fullscreen). Both modes, after donors
-    # (in port mode the file arrives from stock via donors).
+    # Step 4c5: device_features overlay (committed duchamp/duchamp.xml over
+    # the donor copy) + patch (AOD/doze/display/fps tweaks, fullscreen flag
+    # from --aod-fullscreen). Both modes, after donors (in port mode the
+    # file arrives from stock via donors).
+    apply_device_features_overlay(patch_root)
     patch_device_features(patch_root, args.aod_fullscreen)
 
     # Step 4c6: hos3->hos4 vibrator fix on the stock tree (vintf XML + hw
