@@ -326,12 +326,14 @@ MIUI_SERVICES_AOD_CATCH_PATCHES = [
 MIUIFREQUENTPHRASE_APK = "product/app/MIUIFrequentPhrase/MIUIFrequentPhrase.apk"
 SETTINGS_APK = "system_ext/priv-app/Settings/Settings.apk"
 # DevicesOverlay.apk resource patch (step 4g3, always, both modes):
-# status_bar_padding_top 14.0px -> 25.0px in any dimen.xml carrying it.
+# status_bar_padding_top 14.0px -> 25.0px in any decoded xml carrying it
+# (the value lives in dimen-port variants, not plain dimen.xml, so the glob
+# is deliberately broad — the tag+value regex itself is the guard).
 # (glob matched against every decoded file name, pattern is a regex —
 # the dimen line indent may vary, so only the tag+value is anchored).
 DEVICE_OVERLAY_APK = "product/overlay/DevicesOverlay.apk"
 DEVICE_OVERLAY_RES_PATCHES = [
-    ("dimen.xml",
+    ("*.xml",
      r'(<dimen name="status_bar_padding_top">)14\.0px(</dimen>)',
      r"\g<1>25.0px\g<2>"),
 ]
@@ -2538,9 +2540,11 @@ def patch_apk_res(apk_rel: str, tag: str, res_patches,
         # value) so the next run's rule can be adjusted to reality.
         if not res_total:
             shown = 0
-            for path in sorted(work_root.rglob("dimen.xml")):
+            for path in sorted(work_root.rglob("*.xml")):
                 if shown >= 5:
                     break
+                if not path.is_file() or path.is_symlink():
+                    continue
                 try:
                     text = path.read_text()
                 except (UnicodeDecodeError, OSError):
@@ -2552,7 +2556,7 @@ def patch_apk_res(apk_rel: str, tag: str, res_patches,
                         if shown >= 5:
                             break
             if not shown:
-                print("  [res-info] no status_bar_padding_top tag in any dimen.xml")
+                print("  [res-info] no status_bar_padding_top tag in any decoded xml")
         tmp = apk_path.with_name(apk_path.name + ".new")
         if tmp.exists():
             tmp.unlink()
