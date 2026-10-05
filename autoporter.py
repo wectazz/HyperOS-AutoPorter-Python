@@ -130,6 +130,10 @@ MOD_PARTITIONS = STOCK_PARTITIONS + [
 # Port mode takes them from the port OTA, mod mode from the stock OTA.
 PORT_META_FILES = ["META-INF/com/android/metadata", "META-INF/com/android/metadata.pb"]
 
+# Unpacked as a donor/mod source only (mi_ext content is relocated into
+# product/ by the tweaks above) — never rebuilt, never packed into super.
+SUPER_EXCLUDE = {"mi_ext"}
+
 # Smali patching (signature-check neutering -> XdConfig). Applied to jars from
 # the unpacked port tree BEFORE the rebuild bakes them back in. Extra smali to
 # inject lives in dsv/<jar-key>/<dex>/ and lands in the matching decompiled dex
@@ -1224,20 +1228,25 @@ FSTAB_STRIP_OPTIONS = [
 def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
     """Patch vendor/etc/fstab.* in the unpacked stock tree, porting the DNA
     rw/decrypt plugin methods: strip AVB options, drop overlay lines (rw),
-    and with decrypt_data also rename fileencryption -> fileencryptable
-    (decrypted /data). AVB strips run before the rename, otherwise the renamed
-    option would no longer match."""
+    drop /mi_ext mount lines (mi_ext is not packed into super, so nothing
+    must try to mount it), and with decrypt_data also rename fileencryption
+    -> fileencryptable (decrypted /data). AVB strips run before the rename,
+    otherwise the renamed option would no longer match."""
     fstabs = sorted((stock_root / "vendor" / "etc").glob("fstab.*"))
     if not fstabs:
         print("  [warn] no vendor/etc/fstab.* found, skip fstab patching\n")
         return
     print(f"=== Patching {len(fstabs)} vendor fstab file(s), decrypt_data={decrypt_data} ===")
     for fst in fstabs:
-        stripped, overlays, encrypts = 0, 0, 0
+        stripped, overlays, miext, encrypts = 0, 0, 0, 0
         out: List[str] = []
         for line in fst.read_text().splitlines(keepends=True):
             if "overlay" in line:
                 overlays += 1
+                continue
+            fields = line.split()
+            if len(fields) >= 2 and fields[1] == "/mi_ext":
+                miext += 1
                 continue
             new = line
             for opt in FSTAB_STRIP_OPTIONS:
@@ -1250,7 +1259,8 @@ def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
             out.append(new)
         fst.write_text("".join(out))
         print(f"  {fst.name}: stripped {stripped} option(s), dropped {overlays} "
-              f"overlay line(s), fileencryptable x{encrypts}")
+              f"overlay line(s), dropped {miext} mi_ext mount line(s), "
+              f"fileencryptable x{encrypts}")
     print()
 
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
@@ -4205,6 +4215,12 @@ def repack_super_image(
         if port_dir is None:
             raise ValueError("port_dir is required in port mode")
         sources = [(stock_dir, STOCK_PARTITIONS), (port_dir, PORT_PARTITIONS)]
+    # SUPER_EXCLUDE partitions (mi_ext) are donors only — never packed.
+    sources = [(img_dir, [p for p in names if p not in SUPER_EXCLUDE])
+               for img_dir, names in sources]
+    excluded = sorted(SUPER_EXCLUDE)
+    if excluded:
+        print(f"Excluded from super (donors only): {', '.join(excluded)}")
     for img_dir, names in sources:
         for part_name in names:
             img_path = img_dir / f"{part_name}.img"
@@ -4761,11 +4777,15 @@ def main() -> None:
     # Rebuild jobs: (partitions, unpacked tree, image dir). Port mode rebuilds
     # the port list from the port tree plus STOCK_PARTITIONS from the stock
     # tree; mod mode rebuilds the full stock set from the single stock tree.
+    # SUPER_EXCLUDE partitions (mi_ext) are unpacked as donors only — never
+    # rebuilt, never packed.
     if args.mode == "port":
-        rebuild_jobs = [(PORT_PARTITIONS, UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR),
+        rebuild_jobs = [([p for p in PORT_PARTITIONS if p not in SUPER_EXCLUDE],
+                         UNPACKED_PORT_DIR, EXTRACTED_PORT_DIR),
                         (STOCK_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)]
     else:
-        rebuild_jobs = [(MOD_PARTITIONS, UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)]
+        rebuild_jobs = [([p for p in MOD_PARTITIONS if p not in SUPER_EXCLUDE],
+                         UNPACKED_STOCK_DIR, EXTRACTED_STOCK_DIR)]
     ext4_rw = parse_ext4_rw(args.ext4_rw, sorted(set(STOCK_PARTITIONS
                                                        + STOCK_EXTRA_PARTITIONS
                                                        + PORT_PARTITIONS)))
