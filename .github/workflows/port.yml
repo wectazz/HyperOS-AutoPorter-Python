@@ -69,7 +69,7 @@ on:
       dialer:
         description: 'Install MIUI dialer (global only: dialer_gl set on EU, mi_ext apps elsewhere; CN skips)'
         required: true
-        default: 'no'
+        default: 'yes'
         type: choice
         options:
           - "yes"

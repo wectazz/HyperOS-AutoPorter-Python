@@ -4441,10 +4441,10 @@ def main() -> None:
     parser.add_argument(
         "--dialer",
         choices=["yes", "no"],
-        default="no",
+        default="yes",
         help="Install the MIUI dialer (global firmwares only: dialer_gl/ set "
               "on EU, mi_ext apps elsewhere; CN already ships it and skips; "
-              "also repoints GmsConfigOverlayComms.apk strings) (default: no)",
+              "also repoints GmsConfigOverlayComms.apk strings) (default: yes)",
     )
     args = parser.parse_args()
     # Firmware region: port mode reads the PORT firmware region, mod mode
