@@ -1202,7 +1202,8 @@ DEBLOAT_HOS4_GLOBAL = [
     "system_ext/priv-app/VoiceCommand",
     "system_ext/priv-app/VoiceUnlock",
     # oat dirs stripped from kept apps (the app itself stays)
-    "product/priv-app/MiuiExtraPhoto/oat",
+    "product/priv-app/MIUISecurityCenterGlobal/oat",
+    "product/app/MIUISystemUIPlugin/oat",
 ]
 # Removed for EVERY version (not part of the per-version lists).
 DEBLOAT_COMMON_FILES = ["mi_ext/etc/init/init.miui.mi_ext.rc"]
