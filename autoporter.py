@@ -87,6 +87,19 @@ def select_modded_apps(hyper_version: str, region: str) -> tuple:
 REGION_VERSION_RE = re.compile(r"OS\d[\d.]*\.[A-Z]*([A-Z]{2})XM")
 
 
+def port_codename_candidates(url: str) -> list:
+    """Device codename candidates from an OTA URL/filename: the full head
+    before -ota (warhol_global / chagall), then the short token before _
+    (warhol / chagall). CN names carry no _global part (both coincide)."""
+    base = url.rsplit("/", 1)[-1]
+    head = base.split("-ota")[0]
+    cands = []
+    for cand in (head, head.split("_")[0]):
+        if cand and cand not in cands:
+            cands.append(cand)
+    return cands
+
+
 def detect_region_code(source: str) -> str:
     """Return the 2-letter firmware region code from an OTA URL/filename.
     Unparseable sources fall back to CN (status quo) with a warning."""
@@ -243,9 +256,8 @@ MI_EXT_MOD_DEVICE = "duchamp"
 MI_EXT_DROP_PROP_KEYS = [
     "ro.mi.xms.version.incremental",
     "ro.mi.os.custfeatureresolve",
-    "ro.ai.os.version.code",
-    "ro.ai.os.version.name",
     "ro.mi.os.version.beta",
+    "ro.vendor.build.ab_ota_partitions",
 ]
 # Set to 3 when the key exists ("if possible" — never added when absent).
 MI_EXT_RADIO_5G_KEY = "ro.vendor.radio.5g"
@@ -1931,10 +1943,12 @@ def _upsert_prop(prop_path: Path, key: str, value: str) -> None:
     prop_path.write_text("\n".join(lines) + "\n")
 
 
-def _patch_mi_ext_build_prop(build_root: Path) -> None:
-    """Edit mi_ext/etc/build.prop: mod_device -> duchamp, drop the
-    version/ai keys, force radio.5g=3 when present, and move the uninstall
-    flag line into product/etc/build.prop. Missing file only warns."""
+def _patch_mi_ext_build_prop(build_root: Path, codename_cands: list) -> None:
+    """Edit mi_ext/etc/build.prop: the port codename in mod_device (taken
+    from the OTA filename, e.g. warhol) is replaced with duchamp (key must
+    exist — never appended), drop the version/ai/ab_ota keys, force
+    radio.5g=3 when present, and move the uninstall flag line into
+    product/etc/build.prop. Missing file only warns."""
     src_prop = build_root / MI_EXT_BUILD_PROP
     if not src_prop.is_file():
         print(f"  [missing, skip] {MI_EXT_BUILD_PROP}")
@@ -1955,7 +1969,16 @@ def _patch_mi_ext_build_prop(build_root: Path) -> None:
             dropped += 1
             continue
         if key == "ro.product.mod_device":
-            out.append(f"ro.product.mod_device={MI_EXT_MOD_DEVICE}")
+            new_value = value
+            for cand in codename_cands:
+                if cand in new_value:
+                    new_value = new_value.replace(cand, MI_EXT_MOD_DEVICE)
+                    break
+            if new_value == value and MI_EXT_MOD_DEVICE not in value:
+                print(f"  [warn] ro.product.mod_device={value} has no port "
+                      f"codename, forced duchamp")
+                new_value = MI_EXT_MOD_DEVICE
+            out.append(f"ro.product.mod_device={new_value}")
             mod_device = True
             continue
         if key == MI_EXT_RADIO_5G_KEY:
@@ -1969,10 +1992,8 @@ def _patch_mi_ext_build_prop(build_root: Path) -> None:
             versioned = True
             continue
         out.append(raw)
-    if not mod_device:
-        out.append(f"ro.product.mod_device={MI_EXT_MOD_DEVICE}")
     src_prop.write_text("\n".join(out) + "\n")
-    print(f"  {MI_EXT_BUILD_PROP}: mod_device={'set' if mod_device else 'appended'}, "
+    print(f"  {MI_EXT_BUILD_PROP}: mod_device={'set' if mod_device else 'absent, skip'}, "
           f"dropped {dropped} line(s), radio.5g={'=3' if radio else 'absent, skip'}, "
           f"version.incr={'prefixed' if versioned else 'absent, skip'}")
     if flag_value is None:
@@ -2058,7 +2079,7 @@ def apply_mi_ext_global_moves(build_root: Path) -> None:
 
 
 def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
-                        region: str) -> None:
+                        region: str, codename_cands: list) -> None:
     """mi_ext + product permission tweaks on the build tree (patch_root, so
     both modes): mi_ext build.prop edits, moves of uninstall blobs from the
     nested mi_ext/product/ into product/, global mi_ext/product content
@@ -2070,7 +2091,7 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
     if not mi_ext.is_dir():
         print("  [warn] no mi_ext/ in build tree, skip mi_ext tweaks")
     else:
-        _patch_mi_ext_build_prop(build_root)
+        _patch_mi_ext_build_prop(build_root, codename_cands)
         for src_rel, dst_rel, gate in MI_EXT_PRODUCT_MOVES:
             if gate is not None and gate != hyper_version:
                 print(f"  [skip] {src_rel} (needs {gate})")
@@ -4500,11 +4521,15 @@ def main() -> None:
               "also repoints GmsConfigOverlayComms.apk strings) (default: yes)",
     )
     args = parser.parse_args()
-    # Firmware region: port mode reads the PORT firmware region, mod mode
-    # the STOCK one (CN = China, anything else = global).
-    region = detect_region_code(PORT_URL if args.mode == "port" else STOCK_URL)
+    # Firmware region + port codename: port mode reads the PORT firmware,
+    # mod mode the STOCK one (CN = China, anything else = global; codename
+    # e.g. warhol from warhol_global-ota_full-*.zip, chagall otherwise).
+    region_url = PORT_URL if args.mode == "port" else STOCK_URL
+    region = detect_region_code(region_url)
+    codename_cands = port_codename_candidates(region_url)
     print(f"Firmware region: {region} "
-          f"({'China' if region == 'CN' else 'global'})")
+          f"({'China' if region == 'CN' else 'global'}), "
+          f"codename candidates: {codename_cands}")
     print(f"Starting HyperOS AutoPorter Workflow (mode: {args.mode}, "
           f"HyperOS version: {args.hyper_version}, "
           f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
@@ -4577,7 +4602,8 @@ def main() -> None:
     # product/, nested dir drops) + product GMS permission removal. Both
     # modes (mi_ext is the port's in port mode, the stock's in mod mode).
     # Runs before debloat so deletions apply to the final content.
-    apply_mi_ext_tweaks(patch_root, args.hyper_version, region)
+    apply_mi_ext_tweaks(patch_root, args.hyper_version, region,
+                        codename_cands)
 
     # Step 4c3b: about_phone_description overlay (device_info.json always,
     # HTMLViewer.apk only on hos3) onto the build tree. Both modes, before
