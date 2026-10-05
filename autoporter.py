@@ -2459,9 +2459,12 @@ def patch_notification_count_smali(text: str) -> tuple:
         for k, bl in enumerate(new_block):
             bs = bl.strip()
             if bs.startswith(".registers") or bs.startswith(".locals"):
-                indent = bl[:len(bl) - len(bl.lstrip())]
-                new_block[k] = f"{indent}.registers 8\n"
-                break
+                m = re.fullmatch(r"\.(registers|locals)\s+(\d+)", bs)
+                if m:
+                    indent = bl[:len(bl) - len(bl.lstrip())]
+                    new_block[k] = (f"{indent}.{m.group(1)} "
+                                    f"{int(m.group(2)) + 2}\n")
+                    break
         anchor = None
         for k, bl in enumerate(new_block):
             if _is_const4(bl, "v0", "0x3"):
