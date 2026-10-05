@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import zipfile
 import subprocess
+from collections import Counter
 from pathlib import Path
 from typing import List
 
@@ -476,6 +477,396 @@ NOTIF_ICON_VALUES_ADD = ["5", "7"]
 # owning class (IconDisplayCustomizationSettings) isn't pinned — the method
 # name itself is the guard.
 NOTIF_COUNT_METHOD_FRAG = "setupShowNotificationIconCount("
+
+KASHI_PRESENTER_OLD = (
+    '.method private getLineNum()I\n'
+    '    .locals 3\n'
+    '\n'
+    '    .line 153\n'
+    '    iget-object v0, p0, Lcom/android/settings/device/DeviceBasicInfoPresenter;->mContext:Landroid/content/Context;\n'
+    '\n'
+    '    invoke-static {v0}, Lcom/android/settings/display/LargeFontUtils;->isLargeFontLevel(Landroid/content/Context;)Z\n'
+    '\n'
+    '    move-result v0\n'
+    '\n'
+    '    const/4 v1, 0x1\n'
+    '\n'
+    '    if-eqz v0, :cond_0\n'
+    '\n'
+    '    return v1\n'
+    '\n'
+    '    .line 154\n'
+    '    :cond_0\n'
+    '    iget-boolean v0, p0, Lcom/android/settings/device/DeviceBasicInfoPresenter;->isUseMiui15CardStyle:Z\n'
+    '\n'
+    '    const/4 v2, 0x2\n'
+    '\n'
+    '    if-eqz v0, :cond_2\n'
+    '\n'
+    '    .line 155\n'
+    '    invoke-static {}, Lcom/android/settings/utils/SettingsFeatures;->isSplitTabletDevice()Z\n'
+    '\n'
+    '    move-result p0\n'
+    '\n'
+    '    if-eqz p0, :cond_1\n'
+    '\n'
+    '    return v2\n'
+    '\n'
+    '    :cond_1\n'
+    '    return v1\n'
+    '\n'
+    '    .line 157\n'
+    '    :cond_2\n'
+    '    iget-object p0, p0, Lcom/android/settings/device/DeviceBasicInfoPresenter;->mContext:Landroid/content/Context;\n'
+    '\n'
+    '    invoke-static {p0}, Lcom/android/settings/MiuiUtils;->isLandScape(Landroid/content/Context;)Z\n'
+    '\n'
+    '    move-result p0\n'
+    '\n'
+    '    if-eqz p0, :cond_3\n'
+    '\n'
+    '    invoke-static {}, Lcom/android/settings/utils/SettingsFeatures;->isSplitTabletDevice()Z\n'
+    '\n'
+    '    move-result p0\n'
+    '\n'
+    '    if-eqz p0, :cond_3\n'
+    '\n'
+    '    const/4 p0, 0x3\n'
+    '\n'
+    '    return p0\n'
+    '\n'
+    '    :cond_3\n'
+    '    return v2\n'
+    '.end method\n'
+)
+KASHI_PRESENTER_NEW = (
+    '.method private getLineNum()I\n'
+    '    .locals 2\n'
+    '\n'
+    '    iget-boolean v0, p0, Lcom/android/settings/device/DeviceBasicInfoPresenter;->isUseMiui15CardStyle:Z\n'
+    '\n'
+    '    const/4 v1, 0x2\n'
+    '\n'
+    '    if-eqz v0, :cond_0\n'
+    '\n'
+    '    return v1\n'
+    '\n'
+    '    :cond_0\n'
+    '    iget-object p0, p0, Lcom/android/settings/device/DeviceBasicInfoPresenter;->mContext:Landroid/content/Context;\n'
+    '\n'
+    '    invoke-static {p0}, Lcom/android/settings/MiuiUtils;->isLandScape(Landroid/content/Context;)Z\n'
+    '\n'
+    '    move-result p0\n'
+    '\n'
+    '    if-eqz p0, :cond_1\n'
+    '\n'
+    '    invoke-static {}, Lcom/android/settings/utils/SettingsFeatures;->isSplitTabletDevice()Z\n'
+    '\n'
+    '    move-result p0\n'
+    '\n'
+    '    if-eqz p0, :cond_1\n'
+    '\n'
+    '    const/4 v1, 0x3\n'
+    '\n'
+    '    :cond_1\n'
+    '    return v1\n'
+    '.end method'
+)
+
+# Settings.apk kashi "About phone" page merge (always, both modes — the
+# reference is the hand-patched warhol Settings): 17 committed files under
+# kashi_settings/ (10 smali into the classes12 dex, 6 new res incl. 2 PNGs,
+# miui_version_card.xml as a full replacement; public.xml is deliberately
+# NOT carried — the rebuild reassigns IDs), wiring edits in 3 device cards
+# + DeviceBasicInfoPresenter.getLineNum() + MiuiSettings ALPHA swaps +
+# res appends. Validated against the warhol base only: PORT_URL must be
+# that firmware, otherwise anchors warn-skip and the merge must be
+# re-diffed. Matching resource IDs in the copied smali are proven only by
+# the on-device About-page render, never by the build going green.
+KASHI_DIR = BASE_DIR / "kashi_settings"
+# Basenames that may legitimately appear in the rebuilt APK (new kashi
+# resources — layouts/drawables stay individual entries, PNGs too);
+# anything else in the entry-set diff still fails fast.
+KASHI_EXPECTED_NEW_ENTRIES = frozenset({
+    "version_card_img_dark.png", "version_card_img_light.png",
+    "device_info_item_kashi.xml", "storage_info_item_kashi.xml",
+    "ic_device_name_info.xml", "storage_progress_drawable.xml",
+})
+# Literal exact-once smali block replaces for the kashi wiring:
+# (target basenames, old, new). Applied when old occurs exactly once;
+# skipped silently when already applied (new present, old absent);
+# anything else warns (usually a firmware drifted from the reference).
+KASHI_CARD_REPLACE = [
+    (["MiuiVersionCard.smali"],
+     "    invoke-virtual {p0}, Lcom/android/settings/device/MiuiVersionCard;->refreshVersionName()V\n"
+     "\n"
+     "    .line 102\n",
+     "    invoke-virtual {p0}, Lcom/android/settings/device/MiuiVersionCard;->refreshVersionName()V\n"
+     "\n"
+     "    invoke-static {p0}, Lcom/android/settings/kashi/Utils;->setVersionCardBgElement(Lcom/android/settings/device/MiuiVersionCard;)V\n"
+     "\n"
+     "    .line 102\n"),
+    (["MiuiVersionCard.smali"],
+     "    invoke-static {}, Lcom/android/settings/MiuiUtils;->isLiteOrLowDevice()Z\n"
+     "\n"
+     "    move-result v0\n"
+     "\n"
+     "    if-nez v0, :cond_2\n",
+     "    invoke-static {}, Lcom/android/settings/MiuiUtils;->isLiteOrLowDevice()Z\n"
+     "\n"
+     "    move-result v0\n"
+     "\n"
+     "    const/4 v0, 0x0\n"
+     "\n"
+     "    if-nez v0, :cond_2\n"),
+    (["MiuiMemoryCard.smali"],
+     "    const/4 v2, 0x1\n"
+     "\n"
+     "    invoke-virtual {v0, v1, p0, v2}, Landroid/view/LayoutInflater;->inflate(ILandroid/view/ViewGroup;Z)Landroid/view/View;\n",
+     "    const/4 v2, 0x1\n"
+     "\n"
+     "    invoke-static {p0}, Lcom/android/settings/kashi/Utils;->getStorageLayout(Landroid/widget/FrameLayout;)I\n"
+     "\n"
+     "    move-result v1\n"
+     "\n"
+     "    invoke-virtual {v0, v1, p0, v2}, Landroid/view/LayoutInflater;->inflate(ILandroid/view/ViewGroup;Z)Landroid/view/View;\n"),
+    (["MiuiDeviceNameCard.smali"],
+     "    const/4 v2, 0x1\n"
+     "\n"
+     "    invoke-virtual {v0, v1, p0, v2}, Landroid/view/LayoutInflater;->inflate(ILandroid/view/ViewGroup;Z)Landroid/view/View;\n",
+     "    const/4 v2, 0x1\n"
+     "\n"
+     "    invoke-static {p0}, Lcom/android/settings/kashi/Utils;->getDeviceLayout(Landroid/widget/FrameLayout;)I\n"
+     "\n"
+     "    move-result v1\n"
+     "\n"
+     "    invoke-virtual {v0, v1, p0, v2}, Landroid/view/LayoutInflater;->inflate(ILandroid/view/ViewGroup;Z)Landroid/view/View;\n"),
+]
+# MiuiSettings ALPHA swaps (IS_INTERNATIONAL_BUILD -> IS_ALPHA_BUILD at the
+# reference sites only — the other 8 occurrences in the file stay): each
+# old block carries its R$id context, so same-shaped blocks for other
+# preferences never match.
+KASHI_ALPHA_REPLACE = [
+    (["MiuiSettings.smali"],
+     "    sget-boolean p2, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n",
+     "    sget-boolean p2, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"),
+    (["MiuiSettings.smali"],
+     "    sget-boolean v10, Lcom/android/settings/utils/SettingsFeatures;->IS_NEED_REMOVE_THEME:Z\n"
+     "\n"
+     "    if-nez v10, :cond_b\n"
+     "\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
+     "\n"
+     "    if-eqz v10, :cond_b\n",
+     "    sget-boolean v10, Lcom/android/settings/utils/SettingsFeatures;->IS_NEED_REMOVE_THEME:Z\n"
+     "\n"
+     "    if-nez v10, :cond_b\n"
+     "\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
+     "\n"
+     "    if-eqz v10, :cond_b\n"),
+    (["MiuiSettings.smali"],
+     "    sget v10, Lcom/android/settings/R$id;->wallpaper_settings:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_a\n"
+     "\n"
+     "    if-nez v3, :cond_8\n"
+     "\n"
+     "    .line 1051\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
+     "\n"
+     "    if-eqz v10, :cond_8\n",
+     "    sget v10, Lcom/android/settings/R$id;->wallpaper_settings:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_a\n"
+     "\n"
+     "    if-nez v3, :cond_8\n"
+     "\n"
+     "    .line 1051\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
+     "\n"
+     "    if-eqz v10, :cond_8\n"),
+    (["MiuiSettings.smali"],
+     "    sget v10, Lcom/android/settings/R$id;->security_status:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_15\n"
+     "\n"
+     "    .line 1085\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
+     "\n"
+     "    if-nez v10, :cond_14\n",
+     "    sget v10, Lcom/android/settings/R$id;->security_status:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_15\n"
+     "\n"
+     "    .line 1085\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
+     "\n"
+     "    if-nez v10, :cond_14\n"),
+    (["MiuiSettings.smali"],
+     "    sget v10, Lcom/android/settings/R$id;->privacy_protection_settings:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_36\n"
+     "\n"
+     "    .line 1206\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
+     "\n"
+     "    if-nez v10, :cond_35\n",
+     "    sget v10, Lcom/android/settings/R$id;->privacy_protection_settings:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_36\n"
+     "\n"
+     "    .line 1206\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
+     "\n"
+     "    if-nez v10, :cond_35\n"),
+    (["MiuiSettings.smali"],
+     "    sget v10, Lcom/android/settings/R$id;->personalize_title:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_38\n"
+     "\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
+     "\n"
+     "    if-nez v10, :cond_37\n",
+     "    sget v10, Lcom/android/settings/R$id;->personalize_title:I\n"
+     "\n"
+     "    if-ne v9, v10, :cond_38\n"
+     "\n"
+     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
+     "\n"
+     "    if-nez v10, :cond_37\n"),
+    (["MiuiSettings.smali"],
+     "    sget-boolean v10, Lmiui/os/Build;->IS_GLOBAL_BUILD:Z\n"
+     "\n"
+     "    if-nez v10, :cond_44\n",
+     "    sget-boolean v10, Lmiui/os/Build;->IS_GLOBAL_BUILD:Z\n"
+     "\n"
+     "    const/4 v10, 0x0\n"
+     "\n"
+     "    if-nez v10, :cond_44\n"),
+]
+# Resource appends (glob, full lines incl. indent): inserted before
+# </resources> when the name="..." is absent (order is irrelevant —
+# aapt sorts the table, so appended position never affects IDs).
+KASHI_RES_APPENDS = [
+    ("values/colors.xml", [
+        '    <color name="bw">#ff000000</color>',
+        '    <color name="storage_progress_bg">#11000000</color>',
+    ]),
+    ("values-night/colors.xml", [
+        '    <color name="bw">#ffffff</color>',
+        '    <color name="storage_progress_bg">#33ffffff</color>',
+    ]),
+    ("values/ids.xml", [
+        '    <id name="storage_progress_kchi" />',
+        '    <id name="device_info_version_card_bg" />',
+        '    <id name="device_name_in_banner" />',
+    ]),
+]
+
+
+def _append_missing_xml_items(text: str, items) -> tuple:
+    """Insert full-line XML items before </resources> when their name="..."
+    is absent (order is irrelevant — aapt sorts the table, so appended
+    position never affects IDs). Returns (new_text, added)."""
+    if "</resources>" not in text:
+        return text, 0
+    have = set()
+    for line in text.splitlines():
+        m = re.search(r'name="([^"]+)"', line)
+        if m:
+            have.add(m.group(1))
+    missing = [ln for ln in items
+               if re.search(r'name="([^"]+)"', ln).group(1) not in have]
+    if not missing:
+        return text, 0
+    new_text = text.replace("</resources>",
+                            "\n".join(missing) + "\n</resources>")
+    return new_text, len(missing)
+
+
+def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
+    """Merge the committed kashi_settings/ overlay into an apktool-decoded
+    Settings tree: new smali into the classes12 dex dir (located by its
+    vendor/.../misys content), new/overwritten res into res/ (public.xml
+    is deliberately NOT carried — the rebuild reassigns IDs), wiring +
+    ALPHA smali block replaces (exact-once or warn-skip), and res appends.
+    Missing sources only warn."""
+    if not KASHI_DIR.is_dir():
+        print(f"  [warn] kashi overlay not found: {KASHI_DIR}, skip")
+        return
+    print("=== Applying kashi Settings overlay ===")
+    # 1. new smali into the classes12 dex dir
+    dex_target = next(
+        (d for d in dex_dirs if (d / "vendor/xiaomi/hardware/misys").is_dir()),
+        None)
+    if dex_target is None:
+        print("  [warn] classes12 dex dir not found, skip kashi smali")
+    else:
+        smali_src = KASHI_DIR / "smali_classes12"
+        copied = 0
+        for src in sorted(smali_src.rglob("*.smali")):
+            dest = dex_target / src.relative_to(smali_src)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            copied += 1
+        print(f"  copied {copied} kashi smali files into {dex_target.name}/")
+    # 2. new/overwritten res into res/ (miui_version_card.xml included:
+    # full replacement rides the same overwrite copy)
+    res_root = work_root / "res"
+    if not res_root.is_dir():
+        print("  [warn] decoded res/ not found, skip kashi res")
+        res_root = None
+    else:
+        res_src = KASHI_DIR / "res"
+        copied = 0
+        for src in sorted(res_src.rglob("*")):
+            if src.is_dir() or src.is_symlink() or not src.is_file():
+                continue
+            dest = res_root / src.relative_to(res_src)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            copied += 1
+        print(f"  copied {copied} kashi res files into res/")
+    # 3. wiring + ALPHA + Presenter smali block replaces (exact-once).
+    for basenames, old, new in KASHI_CARD_REPLACE + KASHI_ALPHA_REPLACE + [
+            (["DeviceBasicInfoPresenter.smali"],
+             KASHI_PRESENTER_OLD, KASHI_PRESENTER_NEW)]:
+        for base_name in basenames:
+            found = [p for d in dex_dirs for p in d.rglob(base_name)]
+            if not found:
+                print(f"  [warn] {base_name} not found in any dex")
+                continue
+            for path in found:
+                text = path.read_text()
+                if old not in text and new in text:
+                    continue  # already applied
+                if text.count(old) != 1:
+                    print(f"  [warn] kashi anchor x{text.count(old)} in "
+                          f"{path.relative_to(work_root)}, skip")
+                    continue
+                path.write_text(text.replace(old, new))
+                print(f"  patched {path.name}: kashi block")
+    # 4. res appends (colors/night-colors/ids)
+    if res_root is not None:
+        for glob, items in KASHI_RES_APPENDS:
+            total = 0
+            for path in sorted(work_root.rglob(glob)):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    text = path.read_text()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                new_text, added = _append_missing_xml_items(text, items)
+                if not added:
+                    continue
+                path.write_text(new_text)
+                print(f"  patched {path.relative_to(work_root)}: +{added} res item(s)")
+                total += added
+            if not total:
+                print(f"  [warn] no res target for {glob}")
+    print()
 
 # init.rc tweak (step 4c3c, both modes, on patch_root): appended once to the
 # end of system/system/etc/init/hw/init.rc (SAR-nested, like the jars and
@@ -2804,9 +3195,125 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
         shutil.rmtree(work_root, ignore_errors=True)
 
 
+def _apply_apk_replace_patches(dex_dirs, replace_patches, log_base) -> None:
+    """Literal whole-file replaces over decoded dex dirs (same semantics as
+    step 3e: warn only when no rule hit the file at all — paired dotted +
+    slashed rules normally match just one form per file)."""
+    replace_hit: set = set()
+    replace_miss: dict = {}
+    for basenames, old, new in replace_patches:
+        for base_name in basenames:
+            found = [p for d in dex_dirs for p in d.rglob(base_name)]
+            if not found:
+                print(f"  [warn] {base_name} not found in any dex")
+                continue
+            for path in found:
+                text = path.read_text()
+                count = text.count(old)
+                if not count:
+                    replace_miss.setdefault(path, []).append(old)
+                    continue
+                path.write_text(text.replace(old, new))
+                replace_hit.add(path)
+                print(f"  patched {path.name}: {count}x replace")
+    for path in sorted(replace_miss):
+        if path not in replace_hit:
+            olds = ", ".join(replace_miss[path])
+            print(f"  [warn] no target string in {path.relative_to(log_base)} ({olds})")
+
+
+def _apply_apk_array_patches(dex_dirs, array_patches, log_base) -> None:
+    """.array-data content replacements (values, not labels)."""
+    for basenames, old_hex, new_items in (array_patches or []):
+        total = 0
+        for base_name in basenames:
+            found = [p for d in dex_dirs for p in d.rglob(base_name)]
+            if not found:
+                print(f"  [warn] {base_name} not found in any dex")
+                continue
+            for path in found:
+                text = path.read_text()
+                if ".array-data" not in text:
+                    continue
+                new_text, count = replace_array_data(text, old_hex, new_items)
+                if not count:
+                    continue
+                path.write_text(new_text)
+                print(f"  patched {path.name}: {count}x .array-data")
+                total += count
+        if not total:
+            print(f"  [warn] no matching .array-data block (starts 0x{old_hex[0]})")
+
+
+def _apply_apk_res_array_funcs(work_root: Path, res_array_funcs) -> None:
+    """String-array content funcs (glob, func) on decoded xml."""
+    for glob, func in (res_array_funcs or []):
+        total = 0
+        for path in sorted(work_root.rglob(glob)):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                text = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if "<string-array" not in text:
+                continue
+            new_text, count = func(text)
+            if not count:
+                continue
+            path.write_text(new_text)
+            print(f"  patched {path.relative_to(work_root)}: +{count} array item(s)")
+            total += count
+        if not total:
+            print(f"  [warn] no matching string-array for {glob}")
+
+
+def _apply_apk_method_funcs(dex_dirs, method_funcs, log_base) -> None:
+    """Method-scoped smali funcs (basenames, func)."""
+    for basenames, func in (method_funcs or []):
+        total = 0
+        for base_name in basenames:
+            found = [p for d in dex_dirs for p in d.rglob(base_name)]
+            if not found:
+                print(f"  [warn] {base_name} not found in any dex")
+                continue
+            for path in found:
+                new_text, count = func(path.read_text())
+                if not count:
+                    continue
+                path.write_text(new_text)
+                print(f"  patched {path.name}: +{count} method(s)")
+                total += count
+        if not total:
+            print(f"  [warn] no target method for {func.__name__}")
+
+
+def _apply_apk_res_replace_patches(work_root: Path, res_replace_patches) -> None:
+    """Literal (glob, old, new) replaces on decoded text files (glob matched
+    against each file name via rglob). Missing matches only warn."""
+    for glob, old, new in (res_replace_patches or []):
+        total = 0
+        for path in sorted(work_root.rglob(glob)):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                text = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            count = text.count(old)
+            if not count:
+                continue
+            path.write_text(text.replace(old, new))
+            print(f"  patched {path.relative_to(work_root)}: {count}x res replace")
+            total += count
+        if not total:
+            print(f"  [warn] no res replace match for {glob}")
+
+
 def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                     build_root: Path, array_patches=None,
-                    res_array_funcs=None, method_funcs=None) -> None:
+                    res_array_funcs=None, method_funcs=None,
+                    expected_new_entries: frozenset = frozenset()) -> None:
     """Smali-patch one APK inside the build tree (patch_root, both modes)
     via tools/apkeditor.jar (decode -> patch smali -> build back): full
     decode with the internal dex lib (handles dex up to 042, unlike the
@@ -2848,87 +3355,11 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
         if not dex_dirs or not any(d.rglob("*.smali") for d in dex_dirs):
             raise RuntimeError(f"apkeditor produced no smali for {apk_path.name} "
                                f"(it exits 0 even on failure)")
-        # 2. literal whole-file replaces (same semantics as step 3e:
-        # warn only when no rule hit the file at all — paired dotted +
-        # slashed rules normally match just one form per file).
-        replace_hit: set = set()
-        replace_miss: dict = {}
-        for basenames, old, new in replace_patches:
-            for base_name in basenames:
-                found = [p for d in dex_dirs for p in d.rglob(base_name)]
-                if not found:
-                    print(f"  [warn] {base_name} not found in any dex")
-                    continue
-                for path in found:
-                    text = path.read_text()
-                    count = text.count(old)
-                    if not count:
-                        replace_miss.setdefault(path, []).append(old)
-                        continue
-                    path.write_text(text.replace(old, new))
-                    replace_hit.add(path)
-                    print(f"  patched {path.name}: {count}x replace")
-        for path in sorted(replace_miss):
-            if path not in replace_hit:
-                olds = ", ".join(replace_miss[path])
-                print(f"  [warn] no target string in {path.relative_to(work_root)} ({olds})")
-        # 2b. .array-data content replacements (values, not labels).
-        for basenames, old_hex, new_items in (array_patches or []):
-            total = 0
-            for base_name in basenames:
-                found = [p for d in dex_dirs for p in d.rglob(base_name)]
-                if not found:
-                    print(f"  [warn] {base_name} not found in any dex")
-                    continue
-                for path in found:
-                    text = path.read_text()
-                    if ".array-data" not in text:
-                        continue
-                    new_text, count = replace_array_data(text, old_hex, new_items)
-                    if not count:
-                        continue
-                    path.write_text(new_text)
-                    print(f"  patched {path.name}: {count}x .array-data")
-                    total += count
-            if not total:
-                print(f"  [warn] no matching .array-data block (starts 0x{old_hex[0]})")
-        # 2c. string-array content funcs on decoded xml (glob, func).
-        for glob, func in (res_array_funcs or []):
-            total = 0
-            for path in sorted(work_root.rglob(glob)):
-                if not path.is_file() or path.is_symlink():
-                    continue
-                try:
-                    text = path.read_text()
-                except (UnicodeDecodeError, OSError):
-                    continue
-                if "<string-array" not in text:
-                    continue
-                new_text, count = func(text)
-                if not count:
-                    continue
-                path.write_text(new_text)
-                print(f"  patched {path.relative_to(work_root)}: +{count} array item(s)")
-                total += count
-            if not total:
-                print(f"  [warn] no matching string-array for {glob}")
-        # 2d. method-scoped smali funcs (basenames, func).
-        for basenames, func in (method_funcs or []):
-            total = 0
-            for base_name in basenames:
-                found = [p for d in dex_dirs for p in d.rglob(base_name)]
-                if not found:
-                    print(f"  [warn] {base_name} not found in any dex")
-                    continue
-                for path in found:
-                    new_text, count = func(path.read_text())
-                    if not count:
-                        continue
-                    path.write_text(new_text)
-                    print(f"  patched {path.name}: +{count} method(s)")
-                    total += count
-            if not total:
-                print(f"  [warn] no target method for {func.__name__}")
+        # 2-2d. rule application (shared helpers, see above).
+        _apply_apk_replace_patches(dex_dirs, replace_patches, work_root)
+        _apply_apk_array_patches(dex_dirs, array_patches, work_root)
+        _apply_apk_res_array_funcs(work_root, res_array_funcs)
+        _apply_apk_method_funcs(dex_dirs, method_funcs, work_root)
         # 3. rebuild into a temp file (atomic replace keeps the old APK on
         # failure).
         tmp = apk_path.with_name(apk_path.name + ".new")
@@ -2941,13 +3372,189 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
             raise RuntimeError(f"apkeditor produced no output for {apk_path.name}")
         with zipfile.ZipFile(tmp) as zout:
             new_entries = {i.filename for i in zout.infolist()}
-        if new_entries != orig_entries:
+        # New resource files (e.g. kashi PNGs) legitimately add entries;
+        # anything else in the diff still fails fast.
+        missing = sorted(orig_entries - new_entries)
+        extra = sorted(new_entries - orig_entries)
+        unexpected = [e for e in extra
+                      if Path(e).name not in expected_new_entries]
+        if missing or unexpected:
             raise RuntimeError(
                 f"apkeditor changed the entry set of {apk_path.name}: "
-                f"lost {sorted(orig_entries - new_entries)[:5]}, "
-                f"added {sorted(new_entries - orig_entries)[:5]}")
+                f"lost {missing[:5]}, "
+                f"added {unexpected[:5]}")
         os.replace(tmp, apk_path)
         print(f"APK smali patching done: {apk_path.name} "
+              f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
+    drop_oat_next_to(apk_path, "patched")
+    print()
+
+
+# Linker-required value fixups for the apktool path (applied to the
+# decoded tree before rules): stock ships raw strings where aapt2 demands
+# typed references. Each swap is semantically identical (boolean true ==
+# int 1 == color 0x00000001 via TypedArray data passthrough); missing
+# anchors only warn (other firmwares may not need them).
+LINKER_FIX_REPLACE = [
+    ("values/styles.xml",
+     '<item name="android:errorColor">true</item>',
+     '<item name="android:errorColor">#00000001</item>'),
+]
+
+
+def _apk_entry_key(name: str) -> str:
+    """Normalize APK entry names for cross-tool comparison: aapt drops
+    redundant version qualifiers (-vN) and renames legacy densities
+    (nxhdpi -> 440dpi) on rebuild."""
+    name = re.sub(r"-v\d+", "", name)
+    return name.replace("nxhdpi", "440dpi")
+
+
+def ensure_apktool_framework() -> None:
+    """De-private apktool's auto-fetched android framework once: rebuilding
+    1.apk from its own decode drops the private flags while keeping every
+    ID (same table order), so legacy drawables link. Skipped when the
+    installed framework is unchanged since the last run (marker file)."""
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError("java not found: install a JRE for apktool (CI: default-jre-headless)")
+    apktool_jar = TOOLS_DIR / "apktool.jar"
+    if not apktool_jar.is_file():
+        raise RuntimeError(f"Missing tool jar: {apktool_jar}")
+    fw_dir = Path.home() / ".local/share/apktool/framework"
+    fw_apk = fw_dir / "1.apk"
+    marker = fw_dir / ".deprivated"
+    if not fw_apk.is_file():
+        raise RuntimeError(
+            "apktool framework 1.apk missing: run any apktool build once "
+            "(it auto-fetches) and retry")
+    try:
+        current = f"{fw_apk.stat().st_size}:{fw_apk.stat().st_mtime_ns}"
+        if marker.is_file() and marker.read_text().strip() == current:
+            print("apktool framework already de-privated, skip")
+            return
+    except OSError:
+        pass
+    print("=== De-privating apktool android framework (one-time) ===")
+    work = Path(tempfile.mkdtemp(prefix="apktool-fw-"))
+    try:
+        run_logged([java, "-jar", str(apktool_jar), "d", "-f",
+                    "-o", str(work / "fw"), str(fw_apk)],
+                   "apktool decode framework")
+        run_logged([java, "-jar", str(apktool_jar), "b", str(work / "fw"),
+                    "-o", str(work / "fw-new.apk")],
+                   "apktool rebuild framework")
+        run_logged([java, "-jar", str(apktool_jar), "if",
+                    str(work / "fw-new.apk")],
+                   "apktool install framework")
+        marker.write_text(
+            f"{fw_apk.stat().st_size}:{fw_apk.stat().st_mtime_ns}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print()
+
+
+def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
+                      build_root: Path, array_patches=None,
+                      res_array_funcs=None, method_funcs=None,
+                      res_replace_patches=None, kashi: bool = False,
+                      expected_new_entries: frozenset = frozenset()) -> None:
+    """Like patch_apk_smali but via tools/apktool.jar (full aapt recompile):
+    required when NEW resources are added (apkeditor builds against the
+    original table and rejects them). Decode layout is apktool-native
+    (res/, smali_classes*/). Afterwards the oat/ dir next to the APK is
+    dropped: dex was rebuilt, so stale compiled code must not survive.
+    Missing APK only warns.
+    The work dir is wiped afterwards (decodes are huge); entry-name sets
+    must match the original (modulo META-INF loss, qualifier normalization
+    and expected new files) or the build fails fast.
+    NOTE: like every other APK edit, the rebuild refreshes signatures; DSV
+    neuters the checks, same as the modded-apps overlays."""
+    apk_path = build_root / apk_rel
+    if not apk_path.is_file():
+        print(f"WARNING: {apk_rel} not found, skip APK patching.\n")
+        return
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError("java not found: install a JRE for apktool (CI: default-jre-headless)")
+    apktool_jar = TOOLS_DIR / "apktool.jar"
+    if not apktool_jar.is_file():
+        raise RuntimeError(f"Missing tool jar: {apktool_jar}")
+    print(f"=== APK-patching {apk_path.name} (apktool) ===")
+    with zipfile.ZipFile(apk_path) as zin:
+        orig_entries = {i.filename for i in zin.infolist()}
+    # Work dir on the system temp fs (NOT the repo: /mnt/d-style mounts are
+    # far too slow for thousand-file decodes, and leftovers would pollute
+    # the repo when a run dies).
+    work_root = Path(tempfile.mkdtemp(prefix=f"apktool-{tag}-"))
+    try:
+        # 1. full decode (apktool exits non-zero on failure, unlike apkeditor).
+        run_logged([java, "-jar", str(apktool_jar), "d", "-f",
+                    "-o", str(work_root), str(apk_path)],
+                   f"apktool decode {apk_path.name}")
+        dex_dirs = sorted(
+            [d for d in work_root.iterdir() if d.is_dir()
+             and (d.name == "smali" or d.name.startswith("smali_classes"))],
+            key=lambda d: d.name)
+        if not dex_dirs or not any(d.rglob("*.smali") for d in dex_dirs):
+            raise RuntimeError(f"apktool produced no smali for {apk_path.name}")
+        # 2-2d. rule application (shared helpers) + linker fixups.
+        _apply_apk_res_replace_patches(work_root, LINKER_FIX_REPLACE)
+        _apply_apk_res_replace_patches(work_root, res_replace_patches)
+        _apply_apk_replace_patches(dex_dirs, replace_patches, work_root)
+        _apply_apk_array_patches(dex_dirs, array_patches, work_root)
+        _apply_apk_res_array_funcs(work_root, res_array_funcs)
+        _apply_apk_method_funcs(dex_dirs, method_funcs, work_root)
+        if kashi:
+            apply_kashi_overlay(work_root, dex_dirs)
+        # 3. rebuild into a temp file (atomic replace keeps the old APK on
+        # failure), with one self-healing retry: a fresh apktool install
+        # auto-fetches its android framework on first build still carrying
+        # private flags — de-private it and rebuild once.
+        tmp = apk_path.with_name(apk_path.name + ".new")
+        if tmp.exists():
+            tmp.unlink()
+        for attempt in (1, 2):
+            proc = subprocess.run(
+                [java, "-jar", str(apktool_jar), "b", str(work_root),
+                 "-o", str(tmp)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if proc.returncode == 0:
+                break
+            if attempt == 1 and "is private" in proc.stdout:
+                print("apktool framework still carries private flags, "
+                      "de-privating and retrying...")
+                ensure_apktool_framework()
+                continue
+            print(f"apktool build {apk_path.name} failed "
+                  f"(exit {proc.returncode}). Last log lines:")
+            print("\n".join(proc.stdout.splitlines()[-30:]))
+            raise subprocess.CalledProcessError(proc.returncode, proc.args)
+        if not tmp.is_file() or tmp.stat().st_size == 0:
+            raise RuntimeError(f"apktool produced no output for {apk_path.name}")
+        with zipfile.ZipFile(tmp) as zout:
+            new_entries = {i.filename for i in zout.infolist()}
+        # META-INF signatures never survive rebuilds (unsigned output; DSV
+        # covers); aapt normalizes redundant qualifiers. New resource files
+        # (e.g. kashi PNGs) legitimately add entries; anything else in the
+        # diff still fails fast.
+        old_keys = Counter(_apk_entry_key(e) for e in orig_entries
+                           if not e.startswith("META-INF/"))
+        new_keys = Counter(_apk_entry_key(e) for e in new_entries
+                           if not e.startswith("META-INF/"))
+        missing = sorted(set(old_keys) - set(new_keys))
+        extra = sorted(set(new_keys) - set(old_keys))
+        unexpected = [e for e in extra
+                      if Path(e).name not in expected_new_entries]
+        if missing or unexpected:
+            raise RuntimeError(
+                f"apktool changed the entry set of {apk_path.name}: "
+                f"lost {missing[:5]}, "
+                f"added {unexpected[:5]}")
+        os.replace(tmp, apk_path)
+        print(f"APK patching done: {apk_path.name} "
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
@@ -4033,12 +4640,17 @@ def main() -> None:
 
     # Step 4g2: Smali-patch APKs (extended keyboard). Always, both modes;
     # each call drops the stale oat/ next to the APK by itself.
+    # MIUIFrequentPhrase goes through apkeditor; Settings goes through
+    # apktool (step 4g2b) since its kashi merge adds new resources.
     patch_apk_smali(
         MIUIFREQUENTPHRASE_APK, "frequentphrase",
         keyboard_replace_rules(["InputMethodBottomManager.smali"]),
         patch_root,
     )
-    patch_apk_smali(
+    # Step 4g2b: Smali+res-patch Settings.apk via apktool (full aapt
+    # recompile — the kashi merge adds NEW resources, which apkeditor
+    # builds reject). Always, both modes.
+    patch_apk_apktool(
         SETTINGS_APK, "settings",
         keyboard_replace_rules(["AvailableVirtualKeyboardFragment.smali"])
         + [(["InputMethodFunctionSelectUtils.smali"],
@@ -4047,6 +4659,8 @@ def main() -> None:
         array_patches=SETTINGS_ARRAY_PATCHES,
         res_array_funcs=[("array*.xml", patch_notification_arrays)],
         method_funcs=[(["*.smali"], patch_notification_count_smali)],
+        kashi=True,
+        expected_new_entries=KASHI_EXPECTED_NEW_ENTRIES,
     )
 
     # Step 4g3: DevicesOverlay.apk resource patch (status_bar_padding_top
