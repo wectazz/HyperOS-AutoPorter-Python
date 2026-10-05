@@ -463,6 +463,19 @@ SETTINGS_ARRAY_PATCHES = (
     + [(["*.smali"], old, SETTINGS_ARRAY_GROUP2_NEW)
        for old in SETTINGS_ARRAY_GROUP2_OLD]
 )
+# Settings.apk notification-icon-count extension (always, both modes):
+# notification_icon_counts entries 0,1,3 -> 0,1,3,3,3 and values 0,1,3 ->
+# 0,1,3,5,7, plus the setupShowNotificationIconCount()V smali widening
+# (registers -> 8, extra consts, 5-elem filled-new-array) to match.
+NOTIF_ICON_ENTRIES_ARRAY = "notification_icon_counts_entries"
+NOTIF_ICON_ENTRIES_ITEM = "<item>@string/display_notification_icon_3</item>"
+NOTIF_ICON_ENTRIES_WANT = 3
+NOTIF_ICON_VALUES_ARRAY = "notification_icon_counts_values"
+NOTIF_ICON_VALUES_ADD = ["5", "7"]
+# (target basenames, func). "*.smali" scans every decoded dex dir since the
+# owning class (IconDisplayCustomizationSettings) isn't pinned — the method
+# name itself is the guard.
+NOTIF_COUNT_METHOD_FRAG = "setupShowNotificationIconCount("
 
 # init.rc tweak (step 4c3c, both modes, on patch_root): appended once to the
 # end of system/system/etc/init/hw/init.rc (SAR-nested, like the jars and
@@ -2332,6 +2345,141 @@ def replace_array_data(text: str, old_hex, new_items) -> tuple:
     return "".join(out), count
 
 
+def patch_notification_arrays(text: str) -> tuple:
+    """Extend notification_icon_counts string-arrays in a decoded XML text:
+    the entries item is duplicated up to NOTIF_ICON_ENTRIES_WANT copies,
+    the values array gains NOTIF_ICON_VALUES_ADD items. Applies to every
+    matching array in the file (qualifier variants alike). Already-present
+    items are not duplicated (idempotent). Returns (new_text, changes)."""
+    lines = text.splitlines()
+    out: List[str] = []
+    changes = 0
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        m = re.search(r'<string-array\s+name="([^"]+)"', line)
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+        name = m.group(1)
+        j = i + 1
+        while j < n and "</string-array>" not in lines[j]:
+            j += 1
+        if j >= n:
+            out.append(line)  # unterminated block, leave alone
+            i += 1
+            continue
+        block = lines[i:j + 1]
+        if name == NOTIF_ICON_ENTRIES_ARRAY:
+            idx = [k for k in range(1, len(block) - 1)
+                   if block[k].strip() == NOTIF_ICON_ENTRIES_ITEM]
+            while 0 < len(idx) < NOTIF_ICON_ENTRIES_WANT:
+                anchor = idx[-1]
+                indent = block[anchor][:len(block[anchor]) - len(block[anchor].lstrip())]
+                block.insert(anchor + 1, f"{indent}{NOTIF_ICON_ENTRIES_ITEM}")
+                changes += 1
+                idx.append(anchor + 1)
+        elif name == NOTIF_ICON_VALUES_ARRAY:
+            have = {block[k].strip() for k in range(1, len(block) - 1)}
+            indent = ""
+            for k in range(1, len(block) - 1):
+                if block[k].strip().startswith("<item>"):
+                    indent = block[k][:len(block[k]) - len(block[k].lstrip())]
+                    break
+            if not indent:
+                indent = " " * 8
+            for val in NOTIF_ICON_VALUES_ADD:
+                if f"<item>{val}</item>" in have:
+                    continue
+                block.insert(len(block) - 1, f"{indent}<item>{val}</item>")
+                changes += 1
+        out.extend(block)
+        i = j + 1
+    new_text = "\n".join(out)
+    if text.endswith("\n"):
+        new_text += "\n"
+    return new_text, changes
+
+
+def _is_const4(line: str, reg: str, val: str) -> bool:
+    """Match a `const/4 <reg>, <val>` instruction line exactly."""
+    return re.fullmatch(rf"const/4 {re.escape(reg)}, {re.escape(val)}",
+                        line.strip()) is not None
+
+
+def patch_notification_count_smali(text: str) -> tuple:
+    """Widen setupShowNotificationIconCount()V for the extended icon-count
+    arrays: `.registers`/`.locals` N -> `.registers 8`, insert
+    `const/4 v5, 0x5` + `const/4 v6, 0x7` after the v0=0x3/v1=0x0/v2=0x1
+    triple (blank-line tolerant), and extend
+    `filled-new-array {v1, v2, v0}` with v5, v6. Applies to every matching
+    method in the file; already-patched methods are skipped (idempotent).
+    Returns (new_text, patched_methods)."""
+    lines = text.splitlines(keepends=True)
+    out: List[str] = []
+    patched = 0
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        s = line.strip()
+        if not (s.startswith(".method") and NOTIF_COUNT_METHOD_FRAG in s):
+            out.append(line)
+            i += 1
+            continue
+        j = i + 1
+        while j < n and lines[j].strip() != ".end method":
+            j += 1
+        if j >= n:
+            raise RuntimeError("Unterminated .method block while patching")
+        block = lines[i:j + 1]
+        body = "".join(block)
+        if "const/4 v5, 0x5" in body and "const/4 v6, 0x7" in body:
+            out.extend(block)  # already patched
+            i = j + 1
+            continue
+        new_block = list(block)
+        for k, bl in enumerate(new_block):
+            bs = bl.strip()
+            if bs.startswith(".registers") or bs.startswith(".locals"):
+                indent = bl[:len(bl) - len(bl.lstrip())]
+                new_block[k] = f"{indent}.registers 8\n"
+                break
+        anchor = None
+        for k, bl in enumerate(new_block):
+            if _is_const4(bl, "v0", "0x3"):
+                rest = [(t, x) for t, x in enumerate(new_block[k + 1:])
+                        if x.strip() != ""]
+                if (len(rest) >= 2
+                        and _is_const4(rest[0][1], "v1", "0x0")
+                        and _is_const4(rest[1][1], "v2", "0x1")):
+                    anchor = k + 1 + rest[1][0]
+                    break
+        if anchor is None:
+            out.extend(block)  # no const triple, leave untouched
+            i = j + 1
+            continue
+        v2line = new_block[anchor]
+        indent = v2line[:len(v2line) - len(v2line.lstrip())]
+        new_block[anchor + 1:anchor + 1] = [
+            "\n",
+            f"{indent}const/4 v5, 0x5\n",
+            "\n",
+            f"{indent}const/4 v6, 0x7\n",
+        ]
+        joined, nrep = re.subn(
+            r"filled-new-array\s+\{v1,\s*v2,\s*v0\}",
+            "filled-new-array {v1, v2, v0, v5, v6}", "".join(new_block))
+        if not nrep:
+            out.extend(block)  # triple without the array init, leave untouched
+            i = j + 1
+            continue
+        out.append(joined)
+        patched += 1
+        i = j + 1
+    return "".join(out), patched
+
+
 def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> dict:
     """Copy dsv/<key>/<dex>/*.smali into the matching decompiled dex dir, at the
     path from each file's own .class declaration. Classes already present in
@@ -2637,13 +2785,15 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
 
 
 def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
-                    build_root: Path, array_patches=None) -> None:
+                    build_root: Path, array_patches=None,
+                    res_array_funcs=None, method_funcs=None) -> None:
     """Smali-patch one APK inside the build tree (patch_root, both modes)
     via tools/apkeditor.jar (decode -> patch smali -> build back): full
     decode with the internal dex lib (handles dex up to 042, unlike the
     baksmali/smali jars), literal whole-file replaces like step 3e plus
     .array-data content replacements (matched by values, not :array_NNN
-    labels), then a rebuild. Afterwards the oat/ dir next to the APK is
+    labels), string-array content funcs (glob, func) on decoded xml, and
+    method-scoped smali funcs (basenames, func) — then a rebuild. Afterwards the oat/ dir next to the APK is
     dropped: dex was rebuilt, so stale compiled code must not survive.
     Missing APK only warns.
     The work dir is wiped afterwards (decodes are huge); entry-name sets must
@@ -2722,6 +2872,43 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                     total += count
             if not total:
                 print(f"  [warn] no matching .array-data block (starts 0x{old_hex[0]})")
+        # 2c. string-array content funcs on decoded xml (glob, func).
+        for glob, func in (res_array_funcs or []):
+            total = 0
+            for path in sorted(work_root.rglob(glob)):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    text = path.read_text()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                if "<string-array" not in text:
+                    continue
+                new_text, count = func(text)
+                if not count:
+                    continue
+                path.write_text(new_text)
+                print(f"  patched {path.relative_to(work_root)}: +{count} array item(s)")
+                total += count
+            if not total:
+                print(f"  [warn] no matching string-array for {glob}")
+        # 2d. method-scoped smali funcs (basenames, func).
+        for basenames, func in (method_funcs or []):
+            total = 0
+            for base_name in basenames:
+                found = [p for d in dex_dirs for p in d.rglob(base_name)]
+                if not found:
+                    print(f"  [warn] {base_name} not found in any dex")
+                    continue
+                for path in found:
+                    new_text, count = func(path.read_text())
+                    if not count:
+                        continue
+                    path.write_text(new_text)
+                    print(f"  patched {path.name}: +{count} method(s)")
+                    total += count
+            if not total:
+                print(f"  [warn] no target method for {func.__name__}")
         # 3. rebuild into a temp file (atomic replace keeps the old APK on
         # failure).
         tmp = apk_path.with_name(apk_path.name + ".new")
@@ -3838,6 +4025,8 @@ def main() -> None:
             FUNCTION_SELECT_OLD, FUNCTION_SELECT_NEW)],
         patch_root,
         array_patches=SETTINGS_ARRAY_PATCHES,
+        res_array_funcs=[("array*.xml", patch_notification_arrays)],
+        method_funcs=[(["*.smali"], patch_notification_count_smali)],
     )
 
     # Step 4g3: DevicesOverlay.apk resource patch (status_bar_padding_top
