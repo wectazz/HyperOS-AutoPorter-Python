@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout android:orientation="vertical" android:clipChildren="true" android:layout_width="match_parent" android:layout_height="match_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <com.android.settings.device.MiuiVersionNameCard android:id="@id/version_name_card_view" android:layout_width="0.0dp" android:layout_height="0.0dp" />
+    <LinearLayout android:orientation="vertical" android:id="@id/device_basic_layout" android:clipChildren="true" android:layout_width="match_parent" android:layout_height="wrap_content">
+        <LinearLayout android:orientation="horizontal" android:clipChildren="true" android:layout_width="match_parent" android:layout_height="wrap_content">
+            <com.android.settings.device.MiuiDeviceNameCard android:id="@id/device_name_card_view" android:layout_width="match_parent" android:layout_height="110.0dp" android:layout_weight="1.0" android:layout_marginStart="12.0dp" android:layout_marginEnd="8.0dp" />
+            <com.android.settings.device.MiuiMemoryCard android:id="@id/device_memory_card_view" android:layout_width="match_parent" android:layout_height="110.0dp" android:layout_weight="1.0" android:layout_marginStart="4.0dp" android:layout_marginEnd="12.0dp" />
+        </LinearLayout>
+        <com.android.settings.device.MiuiGuaranteeCard android:id="@id/device_guarantee_card_view" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <com.android.settings.device.MiuiDeviceBenefitsCard android:id="@id/device_mall_card_view" android:layout_width="match_parent" android:layout_height="wrap_content" />
+    </LinearLayout>
+</LinearLayout>

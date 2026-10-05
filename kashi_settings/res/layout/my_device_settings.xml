@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout android:layout_width="match_parent" android:layout_height="match_parent"
+  xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto">
+    <miuix.springback.view.SpringBackLayout android:id="@id/springview" android:layout_width="match_parent" android:layout_height="match_parent" app:scrollableView="@id/scrollview">
+        <miuix.core.widget.NestedScrollView android:id="@id/scrollview" android:clipToPadding="false" android:layout_width="match_parent" android:layout_height="match_parent">
+            <LinearLayout android:orientation="vertical" android:id="@id/scroll_layout" android:layout_width="match_parent" android:layout_height="wrap_content">
+                <View android:id="@id/version_card_click_view" android:layout_width="match_parent" android:layout_height="238.0dp" />
+                <include layout="@layout/device_layout" />
+                <RelativeLayout android:id="@id/device_params" android:background="@drawable/new_device_card_back_ground" android:paddingTop="16.0dp" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/my_device_card_margin_edge" android:layout_marginStart="@dimen/card_margin_edge" android:layout_marginEnd="@dimen/card_margin_edge">
+                    <androidx.recyclerview.widget.RecyclerView android:id="@id/description_grid" android:layout_width="match_parent" android:layout_height="wrap_content" android:overScrollMode="never" android:paddingStart="@dimen/preference_item_padding_os2" android:paddingEnd="@dimen/preference_item_padding_os2" android:nestedScrollingEnabled="false" />
+                </RelativeLayout>
+                <FrameLayout android:id="@id/prefs_container" android:clipChildren="false" android:clipToPadding="false" android:layout_width="match_parent" android:layout_height="0.0dp" android:layout_marginTop="12.0dp" android:layout_weight="1.0" android:smoothScrollbar="false" />
+                <TextView android:textSize="13.0sp" android:id="@id/disclaimer" android:visibility="gone" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20.0dp" android:layout_marginBottom="@dimen/my_card_bottom_padding" android:text="@string/my_device_disclaimer" android:layout_marginStart="@dimen/device_name_edit_usage_padding" android:layout_marginEnd="@dimen/device_name_edit_usage_padding" style="@style/Miuix.AppCompat.TextAppearance.List.Secondary.Preference" />
+            </LinearLayout>
+        </miuix.core.widget.NestedScrollView>
+    </miuix.springback.view.SpringBackLayout>
+    <com.android.settings.device.MiuiVersionCard android:id="@id/miui_version_card_view" android:layout_width="match_parent" android:layout_height="@dimen/my_device_os_logo_area_height" />
+</FrameLayout>
