@@ -1141,6 +1141,53 @@ DEBLOAT_HOS4: List[str] = [
     "product/priv-app/MiuiExtraPhoto/oat",
 ]
 DEBLOAT = {"hos3": DEBLOAT_HOS3, "hos4": DEBLOAT_HOS4}
+# Debloat for hos4 GLOBAL firmwares (warhol and friends): the CN list
+# mostly misses there (different app names), so this replaces it — plus the
+# version-generic tails (system_ext, kept-app oat, both warn-skip when
+# absent). Paths relative to the unpacked target tree, like above.
+DEBLOAT_HOS4_GLOBAL = [
+    # product/app
+    "product/app/AiAsstVision",
+    "product/app/AnalyticsCore",
+    "product/app/CatchLog",
+    "product/app/Drive",
+    "product/app/GlobalPackageInstaller",
+    "product/app/Gmail2",
+    "product/app/Maps",
+    "product/app/Meet",
+    "product/app/MiBugReportOS4Global",
+    "product/app/MiSightServiceGlobal",
+    "product/app/MITSMClientGlobal",
+    "product/app/MIUISystemAppUpdater",
+    "product/app/MSA-Global",
+    "product/app/ThirdAppAssistantGlobal",
+    "product/app/Updater",
+    "product/app/Videos",
+    "product/app/XMSFKeeperAll",
+    "product/app/YouTube",
+    "product/app/YTMusic",
+    # product/data-app
+    "product/data-app/MiGalleryLockScreenGlobalOs4",
+    # product/priv-app
+    "product/priv-app/AndroidAutoStub",
+    "product/priv-app/FamilyLinkParentalControl",
+    "product/priv-app/LinkToWindows",
+    "product/priv-app/MIServiceGlobal",
+    "product/priv-app/MIUIEsimLPA",
+    "product/priv-app/MIUIMusicGlobal",
+    "product/priv-app/MIUIVideoPlayer",
+    "product/priv-app/PersonalSafety",
+    "product/priv-app/Wellbeing",
+    # system_ext leftovers (same as CN — warn-skip when absent)
+    "system_ext/app/DebugLoggerUI",
+    "system_ext/app/digitalkey",
+    "system_ext/app/MiSightService",
+    "system_ext/app/MiuiDaemon",
+    "system_ext/priv-app/VoiceCommand",
+    "system_ext/priv-app/VoiceUnlock",
+    # oat dirs stripped from kept apps (the app itself stays)
+    "product/priv-app/MiuiExtraPhoto/oat",
+]
 # Removed for EVERY version (not part of the per-version lists).
 DEBLOAT_COMMON_FILES = ["mi_ext/etc/init/init.miui.mi_ext.rc"]
 # Debloat for the unpacked STOCK tree. NOTE: vendor exists only in stock
@@ -2474,13 +2521,19 @@ def apply_debloat_entries(unpacked_root: Path, entries: List[str], label: str) -
     print(f"Debloat done: removed {removed}, missing {missing}.\n")
 
 
-def apply_debloat(unpacked_root: Path, version: str) -> None:
+def apply_debloat(unpacked_root: Path, version: str, region: str) -> None:
     """Delete the debloat list entries for a HyperOS version from the target
     unpacked tree (port tree in port mode, stock tree in mod mode), plus the
-    init.miui.mi_ext.rc file, removed for every version."""
-    apply_debloat_entries(unpacked_root,
-                          list(DEBLOAT.get(version, [])) + DEBLOAT_COMMON_FILES,
-                          f"'{version}'")
+    init.miui.mi_ext.rc file, removed for every version. Hos4 global
+    firmwares take DEBLOAT_HOS4_GLOBAL instead of the CN list."""
+    if version == "hos4" and region != "CN":
+        apply_debloat_entries(unpacked_root,
+                              list(DEBLOAT_HOS4_GLOBAL) + DEBLOAT_COMMON_FILES,
+                              "'hos4-global'")
+    else:
+        apply_debloat_entries(unpacked_root,
+                              list(DEBLOAT.get(version, [])) + DEBLOAT_COMMON_FILES,
+                              f"'{version}'")
 
 
 def apply_stock_debloat(stock_root: Path) -> None:
@@ -4567,13 +4620,15 @@ def main() -> None:
     # is not debloat-gated (functional, not deletions); only the
     # fileencryption rename follows --decrypt-data. Runs before the rebuild.
     debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
+    if debloat_version == "hos4_gl":
+        debloat_version = "hos4"  # gl set has no own list; region refines below
     if debloat_version == "none":
         print("Debloat skipped (--debloat none).\n")
     elif args.mode == "port":
-        apply_debloat(UNPACKED_PORT_DIR, debloat_version)
+        apply_debloat(UNPACKED_PORT_DIR, debloat_version, region)
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     else:
-        apply_debloat(UNPACKED_STOCK_DIR, debloat_version)
+        apply_debloat(UNPACKED_STOCK_DIR, debloat_version, region)
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
 
