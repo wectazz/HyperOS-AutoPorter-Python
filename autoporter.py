@@ -40,7 +40,7 @@ STOCK_URL = (
 )
 PORT_URL = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
-    "OS4.0.0.12.XPTCNXM/chagall-ota_full-OS4.0.0.12.XPTCNXM-user-17.0-20bb2c4a3d.zip"
+    "OS4.0.0.5.XPSMIXM/warhol_global-ota_full-OS4.0.0.5.XPSMIXM-user-17.0-1c96a82e5f.zip"
 )
 
 HOS3_MOD_URL = (
@@ -562,6 +562,17 @@ SYSTEM_PROP_APPEND = [
     "debug.graphics.game_default_frame_rate.disabled=true",
     "debug.hwui.renderer=skiavk",
 ]
+# Computility levels (hos4/hos4_gl, either mode): written into
+# product/etc/build.prop. The keys already exist in stock build.prop, so
+# _apply_prop_entries() replaces them in place (no append, no dupes).
+COMPUTILITY_PROPS = [
+    "persist.sys.computilityV2.cpulevel=2",
+    "persist.sys.computilityV2.gpulevel=2",
+    "persist.sys.computilityV2.devicelevel=4",
+    "persist.sys.computility.cpulevel=6",
+    "persist.sys.computility.gpulevel=6",
+]
+COMPUTILITY_VERSIONS = ("hos4", "hos4_gl")
 
 # Donor blobs copied from the unpacked STOCK trees into the unpacked PORT trees
 # before the rebuild (hardware blobs the port build lacks). Paths are relative
@@ -1749,14 +1760,20 @@ def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
     prop_path.write_text("\n".join(lines) + "\n")
 
 
-def apply_build_prop_tweaks(build_root: Path, density: int) -> None:
+def apply_build_prop_tweaks(build_root: Path, density: int,
+                            hyper_version: str) -> None:
     """product/system build.prop tweaks on the build tree (patch_root, both
-    modes): density keys in product, custom append blocks, and locale/host
-    normalization in both files. Missing files only warn."""
+    modes): density keys in product, custom append blocks, computility
+    levels on hos4/hos4_gl (replaced in place — the keys already exist),
+    and locale/host normalization in both files. Missing files only warn."""
     print("=== Applying build.prop tweaks ===")
+    product_entries = ([f"{k}={density}" for k in DENSITY_PROP_KEYS]
+                       + PRODUCT_PROP_APPEND)
+    if hyper_version in COMPUTILITY_VERSIONS:
+        product_entries += COMPUTILITY_PROPS
+        print(f"  hos4 computility levels: {len(COMPUTILITY_PROPS)} entries")
     jobs = [
-        (PRODUCT_BUILD_PROP,
-         [f"{k}={density}" for k in DENSITY_PROP_KEYS] + PRODUCT_PROP_APPEND),
+        (PRODUCT_BUILD_PROP, product_entries),
         (SYSTEM_BUILD_PROP, SYSTEM_PROP_APPEND),
     ]
     tail = ["ro.product.locale=en-US", "ro.build.host=wectazz"]
@@ -3912,7 +3929,7 @@ def main() -> None:
     # Step 4c4: build.prop tweaks (density, custom blocks, locale/host) on
     # the build tree. Both modes. Order vs debloat is irrelevant (nothing
     # there touches build.prop).
-    apply_build_prop_tweaks(patch_root, args.density)
+    apply_build_prop_tweaks(patch_root, args.density, args.hyper_version)
 
     # Step 4c5: device_features overlay (committed duchamp/duchamp.xml over
     # the donor copy) + patch (AOD/doze/display/fps tweaks, fullscreen flag
