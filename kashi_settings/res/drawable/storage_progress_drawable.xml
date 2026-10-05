@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list android:paddingMode="stack"
+  xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:gravity="fill_horizontal|center" android:id="@android:id/background">
+        <shape>
+            <solid android:color="@color/storage_progress_bg" />
+            <size android:height="7.0dp" />
+            <corners android:radius="8.0dp" />
+        </shape>
+    </item>
+    <item android:gravity="fill_horizontal|center" android:id="@android:id/progress">
+        <clip>
+            <shape android:tint="@color/bw">
+                <size android:height="7.0dp" />
+                <corners android:radius="8.0dp" />
+            </shape>
+        </clip>
+    </item>
+</layer-list>

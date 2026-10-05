@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView android:layout_width="match_parent" android:layout_height="110.0dp" android:layout_marginBottom="16.0dp" app:cardBackgroundColor="@color/my_device_info_item_background_color" app:cardCornerRadius="15.0dp" app:cardElevation="0.0dp" app:rippleColor="?android:colorControlHighlight"
+  xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto">
+    <LinearLayout android:gravity="start" android:orientation="vertical" android:paddingBottom="10.0dp" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingHorizontal="16.0dp">
+        <LinearLayout android:gravity="start|center" android:layout_gravity="start" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="16.0dp">
+            <ImageView android:layout_width="24.0dp" android:layout_height="24.0dp" android:src="@drawable/ic_device_name_info" />
+        </LinearLayout>
+        <TextView android:textSize="16.0sp" android:textColor="?android:textColorPrimary" android:id="@id/title" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="12.0dp" android:lineSpacingMultiplier="1.1" android:fontFamily="@android:string/config_ethernet_tcp_buffers" android:textAlignment="viewStart" />
+        <TextView android:textSize="14.0sp" android:textColor="?android:textColorSecondary" android:id="@id/summary" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="2.0dp" android:lineSpacingMultiplier="1.15" android:textAlignment="viewStart" />
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

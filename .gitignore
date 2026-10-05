@@ -10,6 +10,10 @@ venv/
 *.bin
 payload.bin
 
+# local APK review copies (hundreds of MB, must never be committed)
+Settings_stock.apk
+Settings_patched.apk
+
 moddedapps_hos3/
 moddedapps_hos4/
 extracted_stock/

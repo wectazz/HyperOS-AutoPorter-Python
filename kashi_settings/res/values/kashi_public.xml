@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <public type="color" name="bw" id="0x7f060fda" />
+    <public type="color" name="storage_progress_bg" id="0x7f060fdb" />
+    <public type="drawable" name="ic_device_name_info" id="0x7f0818e6" />
+    <public type="drawable" name="version_card_img_light" id="0x7f0818e7" />
+    <public type="drawable" name="version_card_img_dark" id="0x7f0818e8" />
+    <public type="drawable" name="storage_progress_drawable" id="0x7f0818e9" />
+    <public type="id" name="storage_progress_kchi" id="0x7f0b10da" />
+    <public type="id" name="device_info_version_card_bg" id="0x7f0b10db" />
+    <public type="id" name="device_name_in_banner" id="0x7f0b10dc" />
+    <public type="layout" name="device_info_item_kashi" id="0x7f0e0786" />
+    <public type="layout" name="storage_info_item_kashi" id="0x7f0e0785" />
+</resources>
