@@ -13,7 +13,7 @@ echo.
 echo ##################################################################
 echo.
 echo.               Choose your root method:
-echo.               1. ReSukiSU
+echo.               1. BakaSU
 echo.               2. No root (default)
 echo.
 echo ##################################################################
@@ -23,7 +23,7 @@ set /p root_choice=Enter 1 or 2:
 if not defined root_choice set root_choice=2
 
 if "%root_choice%" == "1" (
-    set "boot_image=images\resukisu.img"
+    set "boot_image=images\bkasu.img"
     echo Selected root method: ReSukiSU
 ) else (
     set "boot_image=images\boot.img"
