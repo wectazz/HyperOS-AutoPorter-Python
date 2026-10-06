@@ -418,6 +418,23 @@ MIUI_SERVICES_AOD_CATCH_PATCHES = [
 # (apk/jar-relative rules built per target, basenames + both pkg forms).
 MIUIFREQUENTPHRASE_APK = "product/app/MIUIFrequentPhrase/MIUIFrequentPhrase.apk"
 SETTINGS_APK = "system_ext/priv-app/Settings/Settings.apk"
+# Provision.apk Poco gate (always, both modes): isPocoDevice()Z -> return
+# false (const/4 v0 + return v0, original registers kept).
+PROVISION_APK = "system_ext/priv-app/Provision/Provision.apk"
+PROVISION_METHOD_PATCHES = [
+    (["provision/Utils.smali"], ["isPocoDevice("], "keep",
+     ["const/4 v0, 0x0", "return v0"]),
+]
+# PowerKeeper.apk thermal/display neutering (always, both modes):
+# getDisplayCtrlCode()I -> return 0; setScreenEffect(+Internal) -> void.
+POWERKEEPER_APK = "system_ext/app/PowerKeeper/PowerKeeper.apk"
+POWERKEEPER_METHOD_PATCHES = [
+    (["feedbackcontrol/ThermalManager.smali"], ["getDisplayCtrlCode("], "keep",
+     ["const/4 p0, 0x0", "return p0"]),
+    (["statemachine/DisplayFrameSetting.smali"],
+     ["setScreenEffect(Ljava/lang/String;II)V",
+      "setScreenEffectInternal(ILjava/lang/String;)V"], "keep", None),
+]
 # MIUI dialer (global firmwares only — CN ships it already; gated by
 # --dialer). EU firmwares carry no dialer in mi_ext, so the committed
 # dialer_gl/ set is used; other global regions move the apps from the
@@ -968,6 +985,7 @@ PRODUCT_PROP_APPEND = [
     "persist.sys.background_blur_version=2",
     "ro.miui.has_handy_mode_sf=1",
     "ro.miui.support.system.app.uninstall.v2=true",
+    "ro.miui.product.home=com.miui.home",
 ]
 SYSTEM_PROP_APPEND = [
     "ro.control_privapp_permissions=",
@@ -1079,20 +1097,24 @@ def apply_vendor_build_prop(stock_root: Path) -> None:
           f"dropped {dropped} line(s).\n")
 
 
-# mi_ext -> product version props (step 4c3 tail): taken with final values
-# (after the mi_ext build.prop edits above) and upserted into
-# product/etc/build.prop. Absent keys only warn.
-MI_EXT_VERSION_COPY_KEYS = [
-    "ro.mi.os.version.code",
-    "ro.mi.os.version.name",
-    "ro.mi.os.version.incremental",
+# mi_ext -> product prop transfer: every key from mi_ext/etc/build.prop is
+# moved (copied + deleted from mi_ext) into product/etc/build.prop, EXCEPT
+# these (matched by key, value ignored). Runs on final mi_ext values.
+MI_EXT_COPY_EXCLUDE = [
+    "ro.vendor.build.ab_ota_partitions",
+    "ro.product.build.version.incremental",
+    "ro.build.version.incremental",
+    "ro.vendor.miui.support_esim",
+    "ro.mi.xms.version.incremental",
+    "ro.mi.os.custfeatureresolve",
+    "ro.mi.os.version.beta",
 ]
 
 
-def apply_mi_ext_version_props(build_root: Path) -> None:
-    """Copy mi_ext version props into product/etc/build.prop (both modes,
-    any region)."""
-    print("=== Copying mi_ext version props into product ===")
+def apply_mi_ext_prop_transfer(build_root: Path) -> None:
+    """Move every mi_ext/etc/build.prop key except MI_EXT_COPY_EXCLUDE into
+    product/etc/build.prop (upsert, idempotent). Missing files only warn."""
+    print("=== Moving mi_ext props into product ===")
     src_prop = build_root / MI_EXT_BUILD_PROP
     dest_prop = build_root / "product" / "etc" / "build.prop"
     if not src_prop.is_file():
@@ -1100,23 +1122,25 @@ def apply_mi_ext_version_props(build_root: Path) -> None:
         return
     if not dest_prop.is_file():
         print("  [missing, skip] product/etc/build.prop "
-              "(version props have nowhere to go)\n")
+              "(props have nowhere to go)\n")
         return
-    values = {}
+    moved, skipped = 0, 0
+    out: List[str] = []
     for raw in src_prop.read_text().splitlines():
         s = raw.strip()
         if not s or s.startswith("#") or "=" not in s:
+            out.append(raw)
             continue
         key, _, value = (part.strip() for part in s.partition("="))
-        if key in MI_EXT_VERSION_COPY_KEYS:
-            values[key] = value
-    for key in MI_EXT_VERSION_COPY_KEYS:
-        if key not in values:
-            print(f"  [missing, skip] {key} (not in mi_ext build.prop)")
+        if key in MI_EXT_COPY_EXCLUDE:
+            out.append(raw)
+            skipped += 1
             continue
-        _upsert_prop(dest_prop, key, values[key])
-        print(f"  {key}={values[key]} -> product/etc/build.prop")
-    print()
+        _upsert_prop(dest_prop, key, value)
+        moved += 1
+    # rewrite mi_ext without the moved keys (comments/blanks/excluded kept)
+    src_prop.write_text("\n".join(out) + "\n")
+    print(f"  moved {moved} prop(s), kept {skipped} excluded.\n")
 
 
 # Extra props for the fenrir variant, appended to system/system/build.prop.
@@ -1257,6 +1281,7 @@ DEBLOAT_HOS4: List[str] = [
     "product/app/system",
     "product/app/ThirdAppAssistant",
     "product/app/Updater",
+    "product/app/facebook-appmanager",
     "product/app/UPTsmService",
     "product/app/VoiceTrigger",
     "product/app/XiaoaiRecommendation",
@@ -1292,6 +1317,8 @@ DEBLOAT_HOS4: List[str] = [
     "product/priv-app/MIUIBrowser",
     "product/priv-app/MIUIQuickSearchBox",
     "product/priv-app/MIUIYellowPage",
+    "product/priv-app/facebook-installer",
+    "product/priv-app/facebook-services",
     "product/priv-app/VoiceAssistAndroidT",
     # system_ext/app
     "system_ext/app/DebugLoggerUI",
@@ -1326,6 +1353,7 @@ DEBLOAT_HOS4_GLOBAL = [
     "product/app/MSA-Global",
     "product/app/ThirdAppAssistantGlobal",
     "product/app/Updater",
+    "product/app/facebook-appmanager",
     "product/app/Videos",
     "product/app/XMSFKeeperAll",
     "product/app/YouTube",
@@ -1342,6 +1370,8 @@ DEBLOAT_HOS4_GLOBAL = [
     "product/priv-app/MIUIVideoPlayer",
     "product/priv-app/PersonalSafety",
     "product/priv-app/Wellbeing",
+    "product/priv-app/facebook-installer",
+    "product/priv-app/facebook-services",
     # system_ext leftovers (same as CN — warn-skip when absent)
     "system_ext/app/DebugLoggerUI",
     "system_ext/app/digitalkey",
@@ -2284,8 +2314,8 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
             print(f"  [missing, skip] {PRODUCT_GMS_PERMISSION}")
     else:
         print(f"  [skip] {PRODUCT_GMS_PERMISSION} kept on global firmware")
-    # Tail: mi_ext version props into product (final mi_ext values).
-    apply_mi_ext_version_props(build_root)
+    # Tail: move mi_ext props into product (final mi_ext values).
+    apply_mi_ext_prop_transfer(build_root)
 
 
 def apply_about_phone_description(build_root: Path, hyper_version: str) -> None:
@@ -3526,6 +3556,28 @@ def _apply_apk_method_funcs(dex_dirs, method_funcs, log_base) -> None:
             print(f"  [warn] no target method for {func.__name__}")
 
 
+def _apply_apk_method_body_patches(dex_dirs, method_body_patches,
+                                   log_base) -> None:
+    """Method-body replacements (basenames, [names + '('], registers, call —
+    same semantics as the jar step 3a; call None = void body, list = custom
+    body lines)."""
+    for basenames, names, regs, call in (method_body_patches or []):
+        for base_name in basenames:
+            found = [p for d in dex_dirs for p in d.rglob(base_name)]
+            if not found:
+                print(f"  [warn] {base_name} not found in any dex")
+                continue
+            for path in found:
+                new_text, patched = replace_method_bodies(
+                    path.read_text(), names, regs, call)
+                if not patched:
+                    print(f"  [warn] no target method in {path.relative_to(log_base)}")
+                    continue
+                path.write_text(new_text)
+                for header in patched:
+                    print(f"  patched {path.name}: {header}")
+
+
 def _apply_apk_res_replace_patches(work_root: Path, res_replace_patches) -> None:
     """Literal (glob, old, new) replaces on decoded text files (glob matched
     against each file name via rglob). Missing matches only warn."""
@@ -3551,14 +3603,16 @@ def _apply_apk_res_replace_patches(work_root: Path, res_replace_patches) -> None
 def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                     build_root: Path, array_patches=None,
                     res_array_funcs=None, method_funcs=None,
+                    method_body_patches=None,
                     expected_new_entries: frozenset = frozenset()) -> None:
     """Smali-patch one APK inside the build tree (patch_root, both modes)
     via tools/apkeditor.jar (decode -> patch smali -> build back): full
     decode with the internal dex lib (handles dex up to 042, unlike the
     baksmali/smali jars), literal whole-file replaces like step 3e plus
     .array-data content replacements (matched by values, not :array_NNN
-    labels), string-array content funcs (glob, func) on decoded xml, and
-    method-scoped smali funcs (basenames, func) — then a rebuild. Afterwards the oat/ dir next to the APK is
+    labels), string-array content funcs (glob, func) on decoded xml,
+    method-scoped smali funcs (basenames, func) and method-body replacements
+    (jar step 3a semantics) — then a rebuild. Afterwards the oat/ dir next to the APK is
     dropped: dex was rebuilt, so stale compiled code must not survive.
     Missing APK only warns.
     The work dir is wiped afterwards (decodes are huge); entry-name sets must
@@ -3598,6 +3652,8 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
         _apply_apk_array_patches(dex_dirs, array_patches, work_root)
         _apply_apk_res_array_funcs(work_root, res_array_funcs)
         _apply_apk_method_funcs(dex_dirs, method_funcs, work_root)
+        _apply_apk_method_body_patches(dex_dirs, method_body_patches,
+                                       work_root)
         # 3. rebuild into a temp file (atomic replace keeps the old APK on
         # failure).
         tmp = apk_path.with_name(apk_path.name + ".new")
@@ -4969,6 +5025,22 @@ def main() -> None:
         method_funcs=[(["*.smali"], patch_notification_count_smali)],
         kashi=True,
         expected_new_entries=KASHI_EXPECTED_NEW_ENTRIES,
+    )
+
+    # Step 4g2c: Smali-patch Provision.apk (Poco gate -> false) and
+    # PowerKeeper.apk (thermal/display neutering). Always, both modes;
+    # each call drops the stale oat/ next to the APK by itself.
+    patch_apk_smali(
+        PROVISION_APK, "provision",
+        [],
+        patch_root,
+        method_body_patches=PROVISION_METHOD_PATCHES,
+    )
+    patch_apk_smali(
+        POWERKEEPER_APK, "powerkeeper",
+        [],
+        patch_root,
+        method_body_patches=POWERKEEPER_METHOD_PATCHES,
     )
 
     # Step 4g3: DevicesOverlay.apk resource patch (status_bar_padding_top
