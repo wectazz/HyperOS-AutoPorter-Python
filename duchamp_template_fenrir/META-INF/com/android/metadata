@@ -1,0 +1,10 @@
+ota-property-files=payload_metadata.bin:5250:310523,payload.bin:5250:8255721248,payload_properties.txt:8255726556:156,apex_info.pb:2443:1552,care_map.pb:4042:1141,metadata:69:723,metadata.pb:860:1535                        
+ota-required-cache=0
+ota-streaming-property-files=payload.bin:5250:8255721248,payload_properties.txt:8255726556:156,apex_info.pb:2443:1552,care_map.pb:4042:1141,metadata:69:723,metadata.pb:860:1535                          
+ota-type=AB
+post-build=Xiaomi/warhol_eea/warhol:17/CP2A.260605.016/17OS4.0.260915.162620036.MTPEGL.S:user/release-keys
+post-build-incremental=17OS4.0.260915.162620036.MTPEGL.S
+post-sdk-level=37
+post-security-patch-level=2026-09-01
+post-timestamp=1789466975
+pre-device=warhol

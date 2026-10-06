@@ -44,6 +44,11 @@ binary/
 dna/
 UKA_5.39_64_magisk_sign/
 
-# flash template IS committed — re-include its payload despite the rules above
-!template/**/*.img
-!template/**/*.zip
+# flash templates ARE committed — re-include their payloads despite the
+# rules above (img/bin/zip go through LFS per .gitattributes)
+!duchamp_template_fenrir/**/*.img
+!duchamp_template_fenrir/**/*.bin
+!duchamp_template_fenrir/**/*.zip
+!duchamp_template_nonfenrir/**/*.img
+!duchamp_template_nonfenrir/**/*.bin
+!duchamp_template_nonfenrir/**/*.zip

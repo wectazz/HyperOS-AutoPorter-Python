@@ -1,2 +1,6 @@
-template/images/*.img filter=lfs diff=lfs merge=lfs -text
-template/**/*.zip filter=lfs diff=lfs merge=lfs -text
+duchamp_template_fenrir/images/*.img filter=lfs diff=lfs merge=lfs -text
+duchamp_template_fenrir/images/*.bin filter=lfs diff=lfs merge=lfs -text
+duchamp_template_fenrir/**/*.zip filter=lfs diff=lfs merge=lfs -text
+duchamp_template_nonfenrir/images/*.img filter=lfs diff=lfs merge=lfs -text
+duchamp_template_nonfenrir/images/*.bin filter=lfs diff=lfs merge=lfs -text
+duchamp_template_nonfenrir/**/*.zip filter=lfs diff=lfs merge=lfs -text

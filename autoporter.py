@@ -30,9 +30,26 @@ EXTRACTED_STOCK_DIR = BASE_DIR / "extracted_stock"
 EXTRACTED_PORT_DIR = BASE_DIR / "extracted_port"
 UNPACKED_STOCK_DIR = BASE_DIR / "unpacked_stock"
 UNPACKED_PORT_DIR = BASE_DIR / "unpacked_port"
-TEMPLATE_DIR = BASE_DIR / "template"
 PACKAGE_DIR = BASE_DIR / "package"
 PORT_META_DIR = BASE_DIR / "port_meta"
+
+# Supported devices. Everything device-specific lives here (add a record
+# per phone — stock URL, fingerprint, template prefix, ...); the only
+# device today is duchamp.
+DEVICES = {
+    "duchamp": {
+        "template_prefix": "duchamp_template",
+        "fingerprint": ("POCO/duchamp_global/duchamp:16/BP2A.250605.031.A3/"
+                        "OS3.0.9.0.WNLMIXM:user/release-keys"),
+    },
+}
+
+
+def template_dir_for(device: str, variant: str) -> Path:
+    """Flash template dir for a device + build variant (base -> nonfenrir,
+    fenrir -> fenrir)."""
+    suffix = "fenrir" if variant == "fenrir" else "nonfenrir"
+    return BASE_DIR / f"{DEVICES[device]['template_prefix']}_{suffix}"
 
 # Download URLs
 STOCK_URL = (
@@ -980,6 +997,137 @@ COMPUTILITY_PROPS = [
     "persist.sys.computility.gpulevel=6",
 ]
 COMPUTILITY_VERSIONS = ("hos4", "hos4_gl")
+
+# Build fingerprint stamped over every ro.*.build.fingerprint key in every
+# build.prop of both unpacked trees (both modes, always). Device value comes
+# from DEVICES[device]["fingerprint"].
+FINGERPRINT_PROP_RE = re.compile(r"^ro\.(?:.*\.)?build\.fingerprint\s*=.*$")
+
+
+def apply_fingerprint(unpacked_roots: list, fingerprint: str) -> None:
+    """Stamp fingerprint over every ro.*.build.fingerprint key in every
+    build.prop under the given unpacked roots (in place, idempotent).
+    Missing files/keys only warn."""
+    print("=== Applying build fingerprint ===")
+    files, stamped = 0, 0
+    for root in unpacked_roots:
+        if not root.is_dir():
+            continue
+        for prop in sorted(root.rglob("build.prop")):
+            if not prop.is_file() or prop.is_symlink():
+                continue
+            lines = prop.read_text().splitlines()
+            changed = 0
+            for i, raw in enumerate(lines):
+                if FINGERPRINT_PROP_RE.match(raw.strip()):
+                    key = raw.strip().split("=", 1)[0].strip()
+                    if lines[i].strip() != f"{key}={fingerprint}":
+                        lines[i] = f"{key}={fingerprint}"
+                        changed += 1
+            if changed:
+                prop.write_text("\n".join(lines) + "\n")
+                print(f"  {prop.relative_to(root)}: fingerprint x{changed}")
+                stamped += changed
+            files += 1
+    if not files:
+        print("  [warn] no build.prop files found, skip fingerprint")
+    else:
+        print(f"Fingerprint done: {stamped} key(s) in {files} file(s).\n")
+
+
+# vendor/etc/build.prop tweaks (stock tree — vendor exists only in stock,
+# both modes): every ro.hwui.use_vulkan=* -> true, debug.renderengine.-
+# backend=* -> skiavkthreaded, and the enforce line is dropped.
+VENDOR_VULKAN_REPLACE = [
+    ("ro.hwui.use_vulkan", "true"),
+    ("debug.renderengine.backend", "skiavkthreaded"),
+]
+VENDOR_DROP_LINES = ["ro.control_privapp_permissions=enforce"]
+
+
+def apply_vendor_build_prop(stock_root: Path) -> None:
+    """Patch vendor/build.prop in the unpacked stock tree (both modes):
+    Vulkan/RenderEngine values forced, the enforce privapp line dropped.
+    Missing file only warns."""
+    print("=== Applying vendor build.prop tweaks ===")
+    prop = stock_root / "vendor" / "build.prop"
+    if not prop.is_file():
+        print("  [missing, skip] vendor/build.prop\n")
+        return
+    out: List[str] = []
+    forced, dropped = 0, 0
+    for raw in prop.read_text().splitlines():
+        s = raw.strip()
+        if s in VENDOR_DROP_LINES:
+            dropped += 1
+            continue
+        if s and not s.startswith("#") and "=" in s:
+            key, _, value = (part.strip() for part in s.partition("="))
+            for fix_key, fix_value in VENDOR_VULKAN_REPLACE:
+                if key == fix_key and value != fix_value:
+                    indent = raw[:len(raw) - len(raw.lstrip())]
+                    out.append(f"{indent}{fix_key}={fix_value}")
+                    forced += 1
+                    break
+            else:
+                out.append(raw)
+                continue
+            continue
+        out.append(raw)
+    prop.write_text("\n".join(out) + "\n")
+    print(f"  vendor/build.prop: forced {forced} value(s), "
+          f"dropped {dropped} line(s).\n")
+
+
+# mi_ext -> product version props (step 4c3 tail): taken with final values
+# (after the mi_ext build.prop edits above) and upserted into
+# product/etc/build.prop. Absent keys only warn.
+MI_EXT_VERSION_COPY_KEYS = [
+    "ro.mi.os.version.code",
+    "ro.mi.os.version.name",
+    "ro.mi.os.version.incremental",
+]
+
+
+def apply_mi_ext_version_props(build_root: Path) -> None:
+    """Copy mi_ext version props into product/etc/build.prop (both modes,
+    any region)."""
+    print("=== Copying mi_ext version props into product ===")
+    src_prop = build_root / MI_EXT_BUILD_PROP
+    dest_prop = build_root / "product" / "etc" / "build.prop"
+    if not src_prop.is_file():
+        print(f"  [missing, skip] {MI_EXT_BUILD_PROP}\n")
+        return
+    if not dest_prop.is_file():
+        print("  [missing, skip] product/etc/build.prop "
+              "(version props have nowhere to go)\n")
+        return
+    values = {}
+    for raw in src_prop.read_text().splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        key, _, value = (part.strip() for part in s.partition("="))
+        if key in MI_EXT_VERSION_COPY_KEYS:
+            values[key] = value
+    for key in MI_EXT_VERSION_COPY_KEYS:
+        if key not in values:
+            print(f"  [missing, skip] {key} (not in mi_ext build.prop)")
+            continue
+        _upsert_prop(dest_prop, key, values[key])
+        print(f"  {key}={values[key]} -> product/etc/build.prop")
+    print()
+
+
+# Extra props for the fenrir variant, appended to system/system/build.prop.
+FENRIR_PROPS = [
+    "ro.boot.verifiedbootstate=green",
+    "vendor.boot.verifiedbootstate=green",
+    "vendor.boot.vbmeta.device_state=locked",
+    "ro.boot.veritymode=enforcing",
+    "ro.boot.vbmeta.device_state=locked",
+    "ro.boot.flash.locked=1",
+]
 
 # Donor blobs copied from the unpacked STOCK trees into the unpacked PORT trees
 # before the rebuild (hardware blobs the port build lacks). Paths are relative
@@ -2136,7 +2284,8 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
             print(f"  [missing, skip] {PRODUCT_GMS_PERMISSION}")
     else:
         print(f"  [skip] {PRODUCT_GMS_PERMISSION} kept on global firmware")
-    print()
+    # Tail: mi_ext version props into product (final mi_ext values).
+    apply_mi_ext_version_props(build_root)
 
 
 def apply_about_phone_description(build_root: Path, hyper_version: str) -> None:
@@ -2230,20 +2379,25 @@ def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
 
 
 def apply_build_prop_tweaks(build_root: Path, density: int,
-                            hyper_version: str) -> None:
+                            hyper_version: str, variant: str) -> None:
     """product/system build.prop tweaks on the build tree (patch_root, both
     modes): density keys in product, custom append blocks, computility
     levels on hos4/hos4_gl (replaced in place — the keys already exist),
-    and locale/host normalization in both files. Missing files only warn."""
+    fenrir verified-boot props on the fenrir variant, and locale/host
+    normalization in both files. Missing files only warn."""
     print("=== Applying build.prop tweaks ===")
     product_entries = ([f"{k}={density}" for k in DENSITY_PROP_KEYS]
                        + PRODUCT_PROP_APPEND)
     if hyper_version in COMPUTILITY_VERSIONS:
         product_entries += COMPUTILITY_PROPS
         print(f"  hos4 computility levels: {len(COMPUTILITY_PROPS)} entries")
+    system_entries = list(SYSTEM_PROP_APPEND)
+    if variant == "fenrir":
+        system_entries += FENRIR_PROPS
+        print(f"  fenrir verified-boot props: {len(FENRIR_PROPS)} entries")
     jobs = [
         (PRODUCT_BUILD_PROP, product_entries),
-        (SYSTEM_BUILD_PROP, SYSTEM_PROP_APPEND),
+        (SYSTEM_BUILD_PROP, system_entries),
     ]
     tail = ["ro.product.locale=en-US", "ro.build.host=wectazz"]
     for rel, entries in jobs:
@@ -4385,10 +4539,44 @@ def split_file(src_path: Path, dest_dir: Path, parts: int, prefix: str) -> None:
           f"(~{piece_mb}MB each) in {dest_dir}.")
 
 
+def validate_template_payloads(template_dir: Path) -> None:
+    """Fail fast when template payloads are LFS pointer files (or otherwise
+    truncated): every file under images/ and every archive must not start
+    with the git-lfs pointer header and must be at least 512 bytes (real
+    payloads start at 4KB, e.g. vbmeta; pointers are ~130 bytes). Flashing
+    a pointer would brick the device — this check runs before packaging."""
+    if not template_dir.is_dir():
+        raise FileNotFoundError(f"Missing flash template: {template_dir}")
+    checked = 0
+    for path in sorted((template_dir / "images").rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            head = f.read(64)
+        if size < 512 or head.startswith(b"version https://git-lfs"):
+            raise RuntimeError(
+                f"Template payload looks like an LFS pointer or truncated: "
+                f"{path} ({size} bytes). Re-pull LFS and retry.")
+        checked += 1
+    for path in sorted(template_dir.rglob("*.zip")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            head = f.read(64)
+        if size < 512 or head.startswith(b"version https://git-lfs"):
+            raise RuntimeError(
+                f"Template archive looks like an LFS pointer or truncated: "
+                f"{path} ({size} bytes). Re-pull LFS and retry.")
+        checked += 1
+    print(f"Template payloads OK: {checked} file(s) in {template_dir.name}.\n")
+
+
 def assemble_package(
     super_img: Path,
     meta_dir: Path,
-    template_dir: Path = TEMPLATE_DIR,
+    template_dir: Path,
     package_dir: Path = PACKAGE_DIR,
     package_type: str = "universal",
 ) -> Path:
@@ -4537,6 +4725,21 @@ def main() -> None:
               "on EU, mi_ext apps elsewhere; CN already ships it and skips; "
               "also repoints GmsConfigOverlayComms.apk strings) (default: yes)",
     )
+    parser.add_argument(
+        "--device",
+        choices=sorted(DEVICES),
+        default="duchamp",
+        help="Target device (selects firmware templates; only duchamp "
+              "supported for now) (default: duchamp)",
+    )
+    parser.add_argument(
+        "--variant",
+        choices=["base", "fenrir"],
+        default="base",
+        help="Build variant: 'base' uses {device}_template_nonfenrir, "
+              "'fenrir' uses {device}_template_fenrir (engineering preloader "
+              "+ patched LK) plus the verified-boot props (default: base)",
+    )
     args = parser.parse_args()
     # Firmware region + port codename: port mode reads the PORT firmware,
     # mod mode the STOCK one (CN = China, anything else = global; codename
@@ -4548,6 +4751,7 @@ def main() -> None:
           f"({'China' if region == 'CN' else 'global'}), "
           f"codename candidates: {codename_cands}")
     print(f"Starting HyperOS AutoPorter Workflow (mode: {args.mode}, "
+          f"device: {args.device}, variant: {args.variant}, "
           f"HyperOS version: {args.hyper_version}, "
           f"package: {args.package_type}, debloat: {args.debloat}, dsv: {args.dsv}, "
            f"decrypt-data: {args.decrypt_data}, ext4-rw: {args.ext4_rw}, "
@@ -4634,7 +4838,13 @@ def main() -> None:
     # Step 4c4: build.prop tweaks (density, custom blocks, locale/host) on
     # the build tree. Both modes. Order vs debloat is irrelevant (nothing
     # there touches build.prop).
-    apply_build_prop_tweaks(patch_root, args.density, args.hyper_version)
+    apply_build_prop_tweaks(patch_root, args.density, args.hyper_version,
+                            args.variant)
+
+    # Step 4c4b: stamp the device fingerprint over every build.prop
+    # (both unpacked trees, both modes, always).
+    apply_fingerprint([UNPACKED_PORT_DIR, UNPACKED_STOCK_DIR],
+                      DEVICES[args.device]["fingerprint"])
 
     # Step 4c5: device_features overlay (committed duchamp/duchamp.xml over
     # the donor copy) + patch (AOD/doze/display/fps tweaks, fullscreen flag
@@ -4674,6 +4884,7 @@ def main() -> None:
         apply_debloat(UNPACKED_STOCK_DIR, debloat_version, region)
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
+    apply_vendor_build_prop(UNPACKED_STOCK_DIR)
 
     # Steps 4e-4g: jar smali patching. --dsv gates ONLY the
     # signature-verification lists (DSV = disable signature verification);
@@ -4831,18 +5042,25 @@ def main() -> None:
         repack_super_image(EXTRACTED_STOCK_DIR, None, super_output,
                            mod_partitions=MOD_PARTITIONS)
 
-    # Step 7: Assemble the final flashable package (template + super chunks,
-    # with or without META-INF depending on package type)
+    # Step 7: Assemble the final flashable package (device template for
+    # the build variant + super chunks, with or without META-INF depending
+    # on package type). The template dir is validated (magic + size) before
+    # anything is packed, so LFS pointer files can never brick a device.
+    template_dir = template_dir_for(args.device, args.variant)
+    validate_template_payloads(template_dir)
     package_dir = assemble_package(super_output, PORT_META_DIR,
+                                   template_dir=template_dir,
                                    package_type=args.package_type)
 
     # Step 8: Pack it into a ZIP (max compression). The name marks the mode
-    # (port = stock+port mix, mod = stock-only) and fastboot-only builds;
-    # the universal ZIP is recovery-flashable.
+    # (port = stock+port mix, mod = stock-only), device, version, variant
+    # and fastboot-only builds; the universal ZIP is recovery-flashable.
     mode_prefix = "port" if args.mode == "port" else "mod"
+    variant_suffix = "-fenrir" if args.variant == "fenrir" else ""
     zip_suffix = "" if args.package_type == "universal" else f"-{args.package_type}"
     create_recovery_zip(package_dir,
-                        BASE_DIR / f"HyperOS-{mode_prefix}-duchamp-{args.hyper_version}{zip_suffix}.zip")
+                        BASE_DIR / f"HyperOS-{mode_prefix}-{args.device}-"
+                        f"{args.hyper_version}{variant_suffix}{zip_suffix}.zip")
 
     print("HyperOS AutoPorter completed successfully!")
 

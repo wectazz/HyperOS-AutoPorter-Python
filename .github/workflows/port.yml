@@ -19,6 +19,22 @@ on:
         options:
           - hos4
           - hos3
+      device:
+        description: 'Target device (selects firmware templates)'
+        required: true
+        default: 'duchamp'
+        type: choice
+        options:
+          - duchamp
+      build_target:
+        description: 'What to build (both runs base + fenrir in parallel)'
+        required: true
+        default: 'base'
+        type: choice
+        options:
+          - base
+          - fenrir
+          - both
       package_type:
         description: 'Package type (universal = recovery + fastboot, fastboot-only = no META-INF)'
         required: true
@@ -87,8 +103,12 @@ on:
 
 jobs:
   build:
-    name: Build Super Image
+    name: Build Super Image (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(inputs.build_target == 'both' && '["base", "fenrir"]' || format('["{0}"]', inputs.build_target)) }}
 
     steps:
       - name: Checkout repository
@@ -124,13 +144,13 @@ jobs:
 
       - name: Run AutoPorter
         run: |
-          sudo python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }} --density ${{ inputs.density }} --aod-fullscreen ${{ inputs.aod_fullscreen }} --dialer ${{ inputs.dialer }}
+          sudo python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }} --density ${{ inputs.density }} --aod-fullscreen ${{ inputs.aod_fullscreen }} --dialer ${{ inputs.dialer }} --device ${{ inputs.device }} --variant ${{ matrix.target }}
 
       - name: Upload build sidecars (debug on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: sidecars-${{ inputs.mode }}-${{ inputs.hyper_version }}
+          name: sidecars-${{ inputs.mode }}-${{ inputs.hyper_version }}-${{ matrix.target }}
           path: |
             extracted_stock/*.fs_config
             extracted_stock/*.file_contexts
@@ -141,6 +161,6 @@ jobs:
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: package-${{ inputs.mode }}-${{ inputs.hyper_version }}-${{ inputs.package_type }}
+          name: package-${{ inputs.mode }}-${{ inputs.hyper_version }}-${{ inputs.package_type }}-${{ matrix.target }}
           path: HyperOS-*-duchamp-*.zip
           if-no-files-found: error
