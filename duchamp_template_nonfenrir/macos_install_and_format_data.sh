@@ -24,7 +24,7 @@ root_choice=${root_choice:-2}
 
 if [ "$root_choice" = "1" ]; then
     boot_image="images/bakasu.img"
-    echo "Selected root method: ReSukiSU"
+    echo "Selected root method: BakaSU"
 else
     boot_image="images/boot.img"
     echo "No root method selected. Proceeding without root."

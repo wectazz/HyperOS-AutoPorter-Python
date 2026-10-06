@@ -24,7 +24,7 @@ if not defined root_choice set root_choice=2
 
 if "%root_choice%" == "1" (
     set "boot_image=images\bakasu.img"
-    echo Selected root method: ReSukiSU
+    echo Selected root method: BakaSU
 ) else (
     set "boot_image=images\boot.img"
     echo No root method selected. Proceeding without root.
