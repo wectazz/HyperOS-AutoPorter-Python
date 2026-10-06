@@ -13,7 +13,7 @@ echo ""
 echo "##################################################################"
 echo ""
 echo "               Choose your root method:"
-echo "               1. ReSukiSU"
+echo "               1. BakaSU"
 echo "               2. No root (default)"
 echo ""
 echo "##################################################################"
@@ -23,7 +23,7 @@ read -p "Enter 1 or 2: " root_choice
 root_choice=${root_choice:-2}
 
 if [ "$root_choice" = "1" ]; then
-    boot_image="images/resukisu.img"
+    boot_image="images/bakasu.img"
     echo "Selected root method: ReSukiSU"
 else
     boot_image="images/boot.img"

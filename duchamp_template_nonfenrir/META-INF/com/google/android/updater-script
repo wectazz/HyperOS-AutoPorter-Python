@@ -58,9 +58,9 @@ package_extract_file("images/vcp.img", "/dev/block/by-name/vcp_b");
 set_progress(1.000000);
 
 show_progress(0.100000, 0);
-ui_print("Flashing ReSukiSU boot partitions...");
-package_extract_file("images/resukisu.img", "/dev/block/by-name/boot_a");
-package_extract_file("images/resukisu.img", "/dev/block/by-name/boot_b");
+ui_print("Flashing BakaSU boot partitions...");
+package_extract_file("images/bakasu.img", "/dev/block/by-name/boot_a");
+package_extract_file("images/bakasu.img", "/dev/block/by-name/boot_b");
 package_extract_file("images/init_boot.img", "/dev/block/by-name/init_boot_a");
 package_extract_file("images/init_boot.img", "/dev/block/by-name/init_boot_b");
 package_extract_file("images/vendor_boot.img", "/dev/block/by-name/vendor_boot_a");
