@@ -41,8 +41,8 @@ Single-file Python tool: `autoporter.py` builds `super.img` from Xiaomi OTA(s) +
 ## Hardcoded inputs
 - Stock (duchamp, HyperOS 3): `odm vendor odm_dlkm system_dlkm vendor_dlkm` (+ extras `product system_ext`, dumped/unpacked for reference only, never packed into super)
 - Port (chagall, HyperOS 4): `mi_ext product system system_ext`
-- Mod (`--mode mod`): full stock set `MOD_PARTITIONS` = `STOCK_PARTITIONS` + missing `PORT_PARTITIONS` names (all 9 from `STOCK_URL`, same order as the port super layout)
-- Firmware URLs (`STOCK_URL`/`PORT_URL`) and mod-set URLs (`HOS3_MOD_URL`/`HOS4_MOD_URL`/`HOS4_GL_MOD_URL`, GitHub release assets) are constants at top of `autoporter.py`.
+- Mod (`--mode mod`): full stock set `MOD_PARTITIONS` = `STOCK_PARTITIONS` + missing `PORT_PARTITIONS` names (all 9 from `STOCK_URL_DUCHAMP`, same order as the port super layout)
+- Firmware URLs (`STOCK_URL_DUCHAMP`/`PORT_URL`) and mod-set URLs (`HOS3_MOD_URL`/`HOS4_MOD_URL`/`HOS4_GL_MOD_URL`, GitHub release assets) are constants at top of `autoporter.py`.
 - HyperOS `system.img` root contains a nested `system/` dir (`unpacked_port/system/system/app/...`, SAR-style). `moddedapps_hos*/system/system/...` mirrors it — the extra level is correct, do not "flatten" it. Other partitions (`product`, `system_ext`, ...) are flat at root.
 - EROFS rebuild uses `EROFS_COMPRESSOR = "lz4hc,9"` (fast + safe; `"lzma,9"` also readable on the 6.1 kernel since MicroLZMA needs 5.16+, but builds much slower). Do NOT switch to deflate: it needs 6.6+ — unreadable images = bootloop.
 

@@ -52,9 +52,9 @@ def template_dir_for(device: str, variant: str) -> Path:
     return BASE_DIR / f"{DEVICES[device]['template_prefix']}_{suffix}"
 
 # Download URLs
-STOCK_URL = (
+STOCK_URL_DUCHAMP = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
-    "OS3.0.304.0.WNLCNXM/duchamp-ota_full-OS3.0.304.0.WNLCNXM-user-16.0-5dc5bd9579.zip"
+    "OS3.0.9.0.WNLMIXM/duchamp_global-ota_full-OS3.0.9.0.WNLMIXM-user-16.0-20cd32d00e.zip"
 )
 PORT_URL = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
@@ -132,7 +132,7 @@ PORT_PARTITIONS = ["mi_ext", "product", "system", "system_ext"]
 # NOT packed into super.img (super takes product/system_ext from the port)
 STOCK_EXTRA_PARTITIONS = ["product", "system_ext"]
 # Full stock partition set for --mode mod (stock-only modification, no port):
-# every dynamic partition comes from STOCK_URL (device's own firmware).
+# every dynamic partition comes from STOCK_URL_DUCHAMP (device's own firmware).
 # Order mirrors the port-mode super layout (stock slots first, then the rest),
 # so mod and port super.img have the same partition order.
 MOD_PARTITIONS = STOCK_PARTITIONS + [
@@ -4800,7 +4800,7 @@ def main() -> None:
     # Firmware region + port codename: port mode reads the PORT firmware,
     # mod mode the STOCK one (CN = China, anything else = global; codename
     # e.g. warhol from warhol_global-ota_full-*.zip, chagall otherwise).
-    region_url = PORT_URL if args.mode == "port" else STOCK_URL
+    region_url = PORT_URL if args.mode == "port" else STOCK_URL_DUCHAMP
     region = detect_region_code(region_url)
     codename_cands = port_codename_candidates(region_url)
     print(f"Firmware region: {region} "
@@ -4828,12 +4828,12 @@ def main() -> None:
     # other. Mod mode takes the full stock firmware only (its own META-INF
     # feeds the package); no port OTA is downloaded.
     if args.mode == "port":
-        process_firmware(STOCK_URL, "stock_duchamp",
+        process_firmware(STOCK_URL_DUCHAMP, "stock_duchamp",
                          STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS, EXTRACTED_STOCK_DIR)
         process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_PORT_DIR,
                          extra_files=PORT_META_FILES, extra_dir=PORT_META_DIR)
     else:
-        process_firmware(STOCK_URL, "stock_duchamp", MOD_PARTITIONS,
+        process_firmware(STOCK_URL_DUCHAMP, "stock_duchamp", MOD_PARTITIONS,
                          EXTRACTED_STOCK_DIR,
                          extra_files=PORT_META_FILES, extra_dir=PORT_META_DIR)
 
