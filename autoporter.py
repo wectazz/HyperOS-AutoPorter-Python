@@ -3617,8 +3617,9 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
     Missing APK only warns.
     The work dir is wiped afterwards (decodes are huge); entry-name sets must
     match the original or the build fails fast.
-    NOTE: like the jar rezip, the rebuild refreshes signatures; DSV neuters
-    the checks, same as the modded-apps overlays."""
+    NOTE: like the jar rezip, the rebuild drops the old signatures, so the
+    APK is re-signed with the committed testkey right away (unsigned output
+    is unparseable); DSV neuters the checks, same as the modded-apps overlays."""
     apk_path = build_root / apk_rel
     if not apk_path.is_file():
         print(f"WARNING: {apk_rel} not found, skip APK smali patching.\n")
@@ -3677,6 +3678,7 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                 f"apkeditor changed the entry set of {apk_path.name}: "
                 f"lost {missing[:5]}, "
                 f"added {unexpected[:5]}")
+        sign_apk_testkey(tmp)
         os.replace(tmp, apk_path)
         print(f"APK smali patching done: {apk_path.name} "
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
@@ -3704,6 +3706,187 @@ def _apk_entry_key(name: str) -> str:
     (nxhdpi -> 440dpi) on rebuild."""
     name = re.sub(r"-v\d+", "", name)
     return name.replace("nxhdpi", "440dpi")
+
+
+# Committed throwaway test key (testkey/testkey.pk8 + testkey.x509.der).
+# Rebuilt APKs are re-signed with it: any content change invalidates the
+# original META-INF, and an unsigned APK fails cert collection at parse
+# (INSTALL_PARSE_FAILED_NO_CERTIFICATES) — before DSV could help. The key
+# mismatch vs the platform key is covered by the DSV patches instead.
+TESTKEY_DIR = BASE_DIR / "testkey"
+_TESTKEY_CACHE = None
+
+
+def _der_len(n: int) -> bytes:
+    if n < 0x80:
+        return bytes([n])
+    b = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(b)]) + b
+
+
+def _der_tlv(tag: int, content: bytes) -> bytes:
+    return bytes([tag]) + _der_len(len(content)) + content
+
+
+def _der_seq(*parts: bytes) -> bytes:
+    return _der_tlv(0x30, b"".join(parts))
+
+
+def _der_set(*parts: bytes) -> bytes:
+    return _der_tlv(0x31, b"".join(parts))
+
+
+def _der_int(n: int) -> bytes:
+    b = n.to_bytes((n.bit_length() + 7) // 8 or 1, "big")
+    if b[0] & 0x80:
+        b = b"\x00" + b
+    return _der_tlv(0x02, b)
+
+
+def _der_oid(*arcs: int) -> bytes:
+    out = bytes([arcs[0] * 40 + arcs[1]])
+    for a in arcs[2:]:
+        stack = [a & 0x7F]
+        a >>= 7
+        while a:
+            stack.append(0x80 | (a & 0x7F))
+            a >>= 7
+        out += bytes(reversed(stack))
+    return _der_tlv(0x06, out)
+
+
+def _der_read(data: bytes):
+    """Minimal DER reader: returns (tag, content, rest)."""
+    tag, data = data[0], data[1:]
+    ln, data = data[0], data[1:]
+    if ln & 0x80:
+        n = ln & 0x7F
+        ln = int.from_bytes(data[:n], "big")
+        data = data[n:]
+    return tag, data[:ln], data[ln:]
+
+
+def _load_testkey():
+    """Parse the committed testkey: RSA (n, d) + cert DER + raw issuer and
+    serial TLVs for the PKCS7 signerInfo."""
+    global _TESTKEY_CACHE
+    if _TESTKEY_CACHE is not None:
+        return _TESTKEY_CACHE
+    pkcs8 = (TESTKEY_DIR / "testkey.pk8").read_bytes()
+    cert_der = (TESTKEY_DIR / "testkey.x509.der").read_bytes()
+    _, outer, rest = _der_read(pkcs8)
+    assert not rest
+    _, _, outer = _der_read(outer)          # version INTEGER
+    _, _, outer = _der_read(outer)          # algorithm SEQ
+    _, octets, _ = _der_read(outer)         # privateKey OCTET STRING
+    _, rsa, rest = _der_read(octets)
+    assert not rest
+    _, _, rsa = _der_read(rsa)              # rsakey version INTEGER
+    _, n_b, rsa = _der_read(rsa)
+    _, _, rsa = _der_read(rsa)              # publicExponent
+    _, d_b, _ = _der_read(rsa)
+    n = int.from_bytes(n_b, "big")
+    d = int.from_bytes(d_b, "big")
+    _, outer, rest = _der_read(cert_der)
+    assert not rest
+    _, tbs, _ = _der_read(outer)  # Certificate -> tbsCertificate
+    kids, raw = [], tbs
+    while raw:
+        tag, content, raw = _der_read(raw)
+        kids.append((tag, bytes([tag]) + _der_len(len(content)) + content))
+    if kids[0][0] == 0xA0:
+        kids.pop(0)
+    serial_raw = kids[0][1]
+    issuer_raw = kids[2][1]
+    _TESTKEY_CACHE = (n, d, cert_der, issuer_raw, serial_raw)
+    return _TESTKEY_CACHE
+
+
+def _rsa_sign_sha256(n: int, d: int, data: bytes) -> bytes:
+    import hashlib
+    digest = hashlib.sha256(data).digest()
+    prefix = bytes.fromhex("3031300d060960864801650304020105000420")
+    block = b"\x00\x01" + b"\xff" * (256 - 3 - len(prefix) - 32) + b"\x00" + prefix + digest
+    sig = pow(int.from_bytes(block, "big"), d, n)
+    return sig.to_bytes(256, "big")
+
+
+def sign_apk_testkey(apk_path: Path) -> None:
+    """(Re-)sign an APK with the committed testkey (v1 JAR signing):
+    drops stale META-INF, writes MANIFEST.MF + CERT.SF + CERT.RSA, atomic
+    replace. Pure stdlib (hashlib + pow), so it runs on a bare JRE-only CI
+    as well. Missing key files raise (fail fast — unsigned is unparseable)."""
+    import base64
+    import hashlib
+    key_path = TESTKEY_DIR / "testkey.pk8"
+    cert_path = TESTKEY_DIR / "testkey.x509.der"
+    if not key_path.is_file() or not cert_path.is_file():
+        raise RuntimeError(f"Missing testkey in {TESTKEY_DIR}: cannot sign {apk_path.name}")
+    n, d, cert_der, issuer_raw, serial_raw = _load_testkey()
+    with zipfile.ZipFile(apk_path) as zin:
+        infos = [i for i in zin.infolist()
+                 if not i.filename.upper().startswith("META-INF/")]
+        blobs = {i.filename: zin.read(i.filename) for i in infos}
+    manifest = [b"Manifest-Version: 1.0\r\nCreated-By: AutoPorter\r\n\r\n"]
+    sections = {}
+    for info in infos:
+        if info.is_dir():
+            continue
+        digest = base64.b64encode(hashlib.sha256(blobs[info.filename]).digest())
+        section = (f"Name: {info.filename}\r\n".encode()
+                   + b"SHA-256-Digest: " + digest + b"\r\n\r\n")
+        sections[info.filename] = section
+        manifest.append(section)
+    manifest_b = b"".join(manifest)
+    sf = [b"Signature-Version: 1.0\r\nCreated-By: AutoPorter\r\n"
+          b"SHA-256-Digest-Manifest: "
+          + base64.b64encode(hashlib.sha256(manifest_b).digest()) + b"\r\n\r\n"]
+    for name in sections:
+        sf.append(f"Name: {name}\r\n".encode() + b"SHA-256-Digest: "
+                  + base64.b64encode(hashlib.sha256(sections[name]).digest())
+                  + b"\r\n\r\n")
+    sf_b = b"".join(sf)
+    sig = _rsa_sign_sha256(n, d, sf_b)
+    oid_data = _der_oid(1, 2, 840, 113549, 1, 7, 1)
+    oid_signed_data = _der_oid(1, 2, 840, 113549, 1, 7, 2)
+    oid_sha256 = _der_oid(2, 16, 840, 1, 101, 3, 4, 2, 1)
+    oid_rsa_sha256 = _der_oid(1, 2, 840, 113549, 1, 1, 11)
+    null = _der_tlv(0x05, b"")
+    signer_info = _der_seq(
+        _der_tlv(0x02, b"\x01"),
+        _der_seq(issuer_raw, serial_raw),
+        _der_seq(oid_sha256, null),
+        _der_seq(oid_rsa_sha256, null),
+        _der_tlv(0x04, sig),
+    )
+    signed_data = _der_seq(
+        _der_tlv(0x02, b"\x01"),
+        _der_set(_der_seq(oid_sha256, null)),
+        _der_seq(oid_data, _der_tlv(0xA0, _der_tlv(0x04, sf_b))),
+        _der_tlv(0xA0, cert_der),
+        _der_set(signer_info),
+    )
+    rsa_b = _der_seq(oid_signed_data, _der_tlv(0xA0, signed_data))
+    tmp = apk_path.with_name(apk_path.name + ".signed")
+    if tmp.exists():
+        tmp.unlink()
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
+        for name, blob in (("META-INF/MANIFEST.MF", manifest_b),
+                           ("META-INF/CERT.SF", sf_b),
+                           ("META-INF/CERT.RSA", rsa_b)):
+            zi = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = 0o644 << 16
+            zout.writestr(zi, blob)
+        for info in infos:
+            zi = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+            zi.compress_type = info.compress_type
+            zi.external_attr = info.external_attr
+            zi.create_system = info.create_system
+            zout.writestr(zi, blobs[info.filename])
+    os.replace(tmp, apk_path)
+    print(f"  signed {apk_path.name} with testkey "
+          f"({apk_path.stat().st_size} bytes).")
 
 
 def ensure_apktool_framework() -> None:
@@ -3764,7 +3947,8 @@ def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
     The work dir is wiped afterwards (decodes are huge); entry-name sets
     must match the original (modulo META-INF loss, qualifier normalization
     and expected new files) or the build fails fast.
-    NOTE: like every other APK edit, the rebuild refreshes signatures; DSV
+    NOTE: the rebuild drops the old signatures, so the APK is re-signed with
+    the committed testkey right away (unsigned output is unparseable); DSV
     neuters the checks, same as the modded-apps overlays."""
     apk_path = build_root / apk_rel
     if not apk_path.is_file():
@@ -3830,8 +4014,8 @@ def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
             raise RuntimeError(f"apktool produced no output for {apk_path.name}")
         with zipfile.ZipFile(tmp) as zout:
             new_entries = {i.filename for i in zout.infolist()}
-        # META-INF signatures never survive rebuilds (unsigned output; DSV
-        # covers); aapt normalizes redundant qualifiers. New resource files
+        # META-INF signatures never survive rebuilds (re-signed with the
+        # testkey right below; aapt normalizes redundant qualifiers). New resource files
         # (e.g. kashi PNGs) legitimately add entries; anything else in the
         # diff still fails fast.
         old_keys = Counter(_apk_entry_key(e) for e in orig_entries
@@ -3847,6 +4031,7 @@ def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
                 f"apktool changed the entry set of {apk_path.name}: "
                 f"lost {missing[:5]}, "
                 f"added {unexpected[:5]}")
+        sign_apk_testkey(tmp)
         os.replace(tmp, apk_path)
         print(f"APK patching done: {apk_path.name} "
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
