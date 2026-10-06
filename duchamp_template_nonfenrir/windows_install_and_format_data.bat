@@ -23,7 +23,7 @@ set /p root_choice=Enter 1 or 2:
 if not defined root_choice set root_choice=2
 
 if "%root_choice%" == "1" (
-    set "boot_image=images\bkasu.img"
+    set "boot_image=images\bakasu.img"
     echo Selected root method: ReSukiSU
 ) else (
     set "boot_image=images\boot.img"
