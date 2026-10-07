@@ -1108,6 +1108,16 @@ MI_EXT_COPY_EXCLUDE = [
     "ro.mi.xms.version.incremental",
     "ro.mi.os.custfeatureresolve",
     "ro.mi.os.version.beta",
+    "ro.mi.cota_app_del_support",
+    "ro.appsflyer.preinstall.path",
+    "ro.miui.pai.preinstall.path",
+    "ro.ai.os.version.code",
+    "ro.facebook.partnerid",
+    "ro.miui.orange_pom.support_region",
+    "ro.miui.customized_clientid",
+    "ro.ai.transparent.sandbox.enabled",
+    "support.parental.control",
+    "ro.ai.os.version.name",
 ]
 
 
