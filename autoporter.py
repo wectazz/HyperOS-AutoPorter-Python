@@ -465,6 +465,16 @@ DEVICE_OVERLAY_RES_PATCHES = [
      r'(<dimen name="status_bar_padding_top">)14\.0px(</dimen>)',
      r"\g<1>25.0px\g<2>"),
 ]
+# MiuiHome.apk res patch (CTS on the pull-down shade, always, both modes):
+# CN builds gate entities by regionType="global" (hidden on CN) — switch to
+# "all" so the region gate opens everywhere. On global firmwares the tag is
+# usually absent and the rule warn-skips.
+MIUIHOME_APK = "product/priv-app/MiuiHome/MiuiHome.apk"
+MIUIHOME_RES_PATCHES = [
+    ("entity_config.xml",
+     r'(regionType=["\'])global(["\'])',
+     r"\g<1>all\g<2>"),
+]
 # Settings.apk .array-data replacements (step 4g2, always, both modes).
 # Old blocks are matched by their 16 float values (as ints — robust to the
 # декомпилер's :array_NNN label numbering, which shifts between builds),
@@ -4111,10 +4121,10 @@ def patch_apk_res(apk_rel: str, tag: str, res_patches,
             raise RuntimeError(f"apkeditor produced no resources for {apk_path.name} "
                                f"(it exits 0 even on failure)")
         res_total = apply_res_file_patches(work_root, res_patches, work_root)
-        # Diagnostic: when nothing matched, show the actual
-        # status_bar_padding_top lines (if the tag exists with a different
-        # value) so the next run's rule can be adjusted to reality.
-        if not res_total:
+        # Diagnostic (devicesoverlay only): when nothing matched, show the
+        # actual status_bar_padding_top lines (if the tag exists with a
+        # different value) so the next run's rule can be adjusted to reality.
+        if not res_total and tag == "devicesoverlay":
             shown = 0
             for path in sorted(work_root.rglob("*.xml")):
                 if shown >= 5:
@@ -4148,6 +4158,10 @@ def patch_apk_res(apk_rel: str, tag: str, res_patches,
                 f"apkeditor changed the entry set of {apk_path.name}: "
                 f"lost {sorted(orig_entries - new_entries)[:5]}, "
                 f"added {sorted(new_entries - orig_entries)[:5]}")
+        # Content changed -> old META-INF digests are stale; re-sign so cert
+        # collection succeeds (launcher/overlays must parse; DSV covers the
+        # key mismatch, same as the smali paths).
+        sign_apk_testkey(tmp)
         os.replace(tmp, apk_path)
         print(f"APK res patching done: {apk_path.name} "
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
@@ -5257,6 +5271,15 @@ def main() -> None:
     patch_apk_res(
         DEVICE_OVERLAY_APK, "devicesoverlay",
         DEVICE_OVERLAY_RES_PATCHES,
+        patch_root,
+    )
+
+    # Step 4g3b: MiuiHome.apk res patch (regionType global -> all in
+    # res/xml/entity_config.xml — CTS entities on the shade are region-gated
+    # on CN builds). Always, both modes; missing APK/no match only warns.
+    patch_apk_res(
+        MIUIHOME_APK, "miuihome",
+        MIUIHOME_RES_PATCHES,
         patch_root,
     )
 
