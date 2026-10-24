@@ -3890,6 +3890,17 @@ def sign_apk_testkey(apk_path: Path) -> None:
     tmp = apk_path.with_name(apk_path.name + ".signed")
     if tmp.exists():
         tmp.unlink()
+
+    def _align_extra(zout, name: str) -> bytes:
+        """Page-align padding for STORED lib/*.so entries: apps with
+        android:extractNativeLibs=false mmap .so straight from the APK,
+        and the installer rejects unaligned ones (res=-2, proven by an
+        install failure). Padding rides the local-header extra field,
+        exactly like zipalign -p 4096."""
+        cur = zout.fp.tell()
+        base = cur + 30 + len(name.encode("utf-8"))
+        return b"\x00" * ((-base) % 4096)
+
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
         for name, blob in (("META-INF/MANIFEST.MF", manifest_b),
                            ("META-INF/CERT.SF", sf_b),
@@ -3903,6 +3914,9 @@ def sign_apk_testkey(apk_path: Path) -> None:
             zi.compress_type = info.compress_type
             zi.external_attr = info.external_attr
             zi.create_system = info.create_system
+            if (info.compress_type == zipfile.ZIP_STORED
+                    and info.filename.startswith("lib/")):
+                zi.extra = _align_extra(zout, info.filename)
             zout.writestr(zi, blobs[info.filename])
     os.replace(tmp, apk_path)
     print(f"  signed {apk_path.name} with testkey "
