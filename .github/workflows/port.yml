@@ -113,8 +113,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
+        # no lfs: flash templates are release assets (fetch_template_release)
 
       - name: Free Disk Space
         run: |

@@ -51,6 +51,68 @@ def template_dir_for(device: str, variant: str) -> Path:
     suffix = "fenrir" if variant == "fenrir" else "nonfenrir"
     return BASE_DIR / f"{DEVICES[device]['template_prefix']}_{suffix}"
 
+
+# Flash templates are NOT in git anymore (the repo stays light, no LFS
+# quota): each template rides a release asset on the "templates" tag and is
+# downloaded at build time. Updating a template = re-upload the asset, no
+# commit needed.
+TEMPLATES_RELEASE = (
+    "https://github.com/wectazz/HyperOS-AutoPorter-Python/releases/download/"
+    "templates/{archive}.zip"
+)
+
+
+def fetch_template_release(device: str, variant: str) -> Path:
+    """Download + unpack the flash template for device+variant from the
+    GitHub release into the repo-root dir template_dir_for() returns.
+    An existing dir is kept as-is (delete it to refresh); payloads are
+    validated right after unpacking so a broken asset fails before build
+    time is burned. Zips are Windows-made (no unix modes), so exec bits
+    for scripts/binaries are restored afterwards."""
+    dest = template_dir_for(device, variant)
+    if dest.is_dir() and any(dest.iterdir()):
+        print(f"Flash template already present, skip download: {dest}\n")
+        return dest
+    suffix = "fenrir" if variant == "fenrir" else "nonfenrir"
+    archive = f"{DEVICES[device]['template_prefix']}_{suffix}"
+    url = TEMPLATES_RELEASE.format(archive=archive)
+    print(f"=== Fetching flash template (GitHub release): {archive} ===")
+    zip_path = BASE_DIR / f"{archive}.zip"
+    download_file_with_progress(url, zip_path)
+    if zip_path.stat().st_size < 1024:
+        raise RuntimeError(f"Template archive too small: {zip_path}")
+    dest.mkdir(parents=True, exist_ok=True)
+    print(f"Unpacking {zip_path.name} into {dest}...")
+    try:
+        shutil.unpack_archive(str(zip_path), str(dest))
+    except Exception:
+        # Fallback to 7z like the mod-set path (non-standard archives)
+        subprocess.run(["7z", "x", str(zip_path), f"-o{dest}", "-y"], check=True)
+    zip_path.unlink(missing_ok=True)
+    # Zip may carry one wrapper dir — flatten it onto dest.
+    items = [p for p in dest.iterdir()]
+    if len(items) == 1 and items[0].is_dir() and not items[0].is_symlink():
+        inner = items[0]
+        for entry in list(inner.iterdir()):
+            shutil.move(str(entry), str(dest / entry.name))
+        inner.rmdir()
+    # Windows zips carry no unix modes: dirs 0755, files 0644, scripts and
+    # bin/ tools executable (matches what git checkout used to give).
+    exec_bits = 0
+    for path in dest.rglob("*"):
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path.suffix == ".sh" or "bin" in path.relative_to(dest).parts[:-1]:
+            path.chmod(0o755)
+            exec_bits += 1
+        else:
+            path.chmod(0o644)
+    print(f"  restored exec bits on {exec_bits} script/bin entries")
+    validate_template_payloads(dest)
+    return dest
+
 # Download URLs
 STOCK_URL_DUCHAMP = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
@@ -5040,6 +5102,11 @@ def main() -> None:
     # Step 1: Tools Setup
     setup_tools()
 
+    # Step 1b: fetch the flash template for the device+variant from the
+    # GitHub release (repo no longer carries it; existing dir = re-run).
+    # Early so a broken/missing asset fails before any build time burns.
+    template_dir = fetch_template_release(args.device, args.variant)
+
     # Step 2: Download & Extract Modded Apps for the selected HyperOS
     # version + firmware region (global hos4 takes the hos4_gl set).
     mod_url, mod_dir, mod_name = select_modded_apps(args.hyper_version, region)
@@ -5360,10 +5427,8 @@ def main() -> None:
 
     # Step 7: Assemble the final flashable package (device template for
     # the build variant + super chunks, with or without META-INF depending
-    # on package type). The template dir is validated (magic + size) before
-    # anything is packed, so LFS pointer files can never brick a device.
-    template_dir = template_dir_for(args.device, args.variant)
-    validate_template_payloads(template_dir)
+    # on package type). The template dir was fetched (and validated) in
+    # step 1b — LFS pointers can never brick a device.
     package_dir = assemble_package(super_output, PORT_META_DIR,
                                    template_dir=template_dir,
                                    package_type=args.package_type)

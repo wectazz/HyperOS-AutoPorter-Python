@@ -46,11 +46,8 @@ binary/
 dna/
 UKA_5.39_64_magisk_sign/
 
-# flash templates ARE committed — re-include their payloads despite the
-# rules above (img/bin/zip go through LFS per .gitattributes)
-!duchamp_template_fenrir/**/*.img
-!duchamp_template_fenrir/**/*.bin
-!duchamp_template_fenrir/**/*.zip
-!duchamp_template_nonfenrir/**/*.img
-!duchamp_template_nonfenrir/**/*.bin
-!duchamp_template_nonfenrir/**/*.zip
+# flash templates are downloaded from the GitHub release at build time
+# (fetch_template_release) — never committed
+duchamp_template_fenrir/
+duchamp_template_nonfenrir/
+duchamp_template_*.zip
