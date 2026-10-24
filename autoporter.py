@@ -945,11 +945,22 @@ def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
         for src in sorted(res_src.rglob("*")):
             if src.is_dir() or src.is_symlink() or not src.is_file():
                 continue
+            # kashi_public.xml (ID pinning) is deliberately NOT carried:
+            # pinned IDs clash with the stock table whenever the port
+            # firmware changes (aapt2: "entry ID is already assigned",
+            # proven on chagall 4.0.0.11). The stock public.xml keeps every
+            # stock ID pinned (R-class consts in the dex stay valid) and
+            # aapt2 auto-assigns the new kashi resources into free slots —
+            # no smali in the overlay hardcodes 0x7f values, so any
+            # assignment works.
+            if src.name == "kashi_public.xml":
+                continue
             dest = res_root / src.relative_to(res_src)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
             copied += 1
-        print(f"  copied {copied} kashi res files into res/")
+        print(f"  copied {copied} kashi res files into res/ "
+              f"(kashi IDs auto-assigned)")
     # 3. wiring + ALPHA + Presenter smali block replaces (exact-once).
     for basenames, old, new in KASHI_CARD_REPLACE + KASHI_ALPHA_REPLACE + [
             (["DeviceBasicInfoPresenter.smali"],
