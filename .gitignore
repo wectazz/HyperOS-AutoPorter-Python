@@ -13,6 +13,8 @@ payload.bin
 # local APK review copies (hundreds of MB, must never be committed)
 Settings_stock.apk
 Settings_patched.apk
+MiuiHome.apk
+MiuiHome_patched.apk
 
 moddedapps_hos3/
 moddedapps_hos4/
