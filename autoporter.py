@@ -1146,6 +1146,56 @@ VENDOR_VULKAN_REPLACE = [
 VENDOR_DROP_LINES = ["ro.control_privapp_permissions=enforce"]
 
 
+# Keystore/SELinux additions for TrickyStore-style key attestation (both
+# variants, both modes): appended to vendor_sepolicy.cil. All four types are
+# plat-public — proven by compiling the shipped .cil set with the device's
+# own secilc using init's exact command line (/data/adb is adb_data_file).
+SELINUX_KEYSTORE_RULES = [
+    "; AutoPorter keystore rules (TrickyStore)",
+    "(allow crash_dump keystore (process (sigchld)))",
+    "(allow keystore adb_data_file (file (read write getattr open)))",
+    "(allow keystore shell_data_file (file (read write getattr open)))",
+]
+
+
+def apply_selinux_keystore_rules(build_root: Path, stock_root: Path) -> None:
+    """Append the keystore allows to vendor/etc/selinux/vendor_sepolicy.cil
+    (idempotent marker). Every referenced type must be declared by the
+    shipped policy set (cheap sanity check before touching anything).
+    Missing files only warn. Port builds ship a stale precompiled cache
+    already (plat/system_ext hashes differ), so init compiles from the .cil
+    sources at boot and the rules take effect."""
+    print("=== Applying SELinux keystore rules ===")
+    vendor_selinux = build_root / "vendor" / "etc" / "selinux"
+    if not vendor_selinux.is_dir():
+        vendor_selinux = stock_root / "vendor" / "etc" / "selinux"
+    cil = vendor_selinux / "vendor_sepolicy.cil"
+    if not cil.is_file():
+        print(f"  [warn] {cil} not found, skip selinux rules\n")
+        return
+    text = cil.read_text()
+    if SELINUX_KEYSTORE_RULES[0] in text:
+        print("  rules already applied, skip append\n")
+        return
+    combined = ""
+    for root in {build_root, stock_root}:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("etc/selinux/*.cil"):
+            if path.is_file() and not path.is_symlink():
+                combined += path.read_text()
+    used = set()
+    for rule in SELINUX_KEYSTORE_RULES[1:]:
+        used.update(re.findall(r"\(allow (\S+) (\S+)", rule)[0])
+    missing = sorted(t for t in used if f"(type {t})" not in combined)
+    if missing:
+        print(f"  [warn] types not declared in the policy set: {missing}, "
+              f"skip selinux rules\n")
+        return
+    cil.write_text(text.rstrip("\n") + "\n" + "\n".join(SELINUX_KEYSTORE_RULES) + "\n")
+    print(f"  appended {len(SELINUX_KEYSTORE_RULES) - 1} rule(s) to {cil}\n")
+
+
 def apply_vendor_build_prop(stock_root: Path) -> None:
     """Patch vendor/build.prop in the unpacked stock tree (both modes):
     Vulkan/RenderEngine values forced, the enforce privapp line dropped.
@@ -5254,6 +5304,11 @@ def main() -> None:
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
     apply_vendor_build_prop(UNPACKED_STOCK_DIR)
+
+    # Step 4d2: SELinux keystore rules (TrickyStore key attestation) —
+    # appended to the vendor policy .cil, both variants/modes. The port
+    # already ships a stale precompiled cache, so init compiles from .cil.
+    apply_selinux_keystore_rules(patch_root, UNPACKED_STOCK_DIR)
 
     # Steps 4e-4g: jar smali patching. --dsv gates ONLY the
     # signature-verification lists (DSV = disable signature verification);
