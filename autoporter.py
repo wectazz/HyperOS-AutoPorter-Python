@@ -5070,6 +5070,13 @@ def main() -> None:
              "'fastboot-only' removes META-INF (default: universal)",
     )
     parser.add_argument(
+        "--package-zip",
+        choices=["yes", "no"],
+        default="no",
+        help="Pack package/ into a local ZIP (yes) or leave the dir for the "
+             "CI artifact, which GitHub zips on download (no) (default: no)",
+    )
+    parser.add_argument(
         "--debloat",
         choices=["auto", "hos3", "hos4", "none"],
         default="auto",
@@ -5499,15 +5506,21 @@ def main() -> None:
                                    template_dir=template_dir,
                                    package_type=args.package_type)
 
-    # Step 8: Pack it into a ZIP (max compression). The name marks the mode
+    # Step 8: optionally pack into a local ZIP. The name marks the mode
     # (port = stock+port mix, mod = stock-only), device, version, variant
     # and fastboot-only builds; the universal ZIP is recovery-flashable.
-    mode_prefix = "port" if args.mode == "port" else "mod"
-    variant_suffix = "-fenrir" if args.variant == "fenrir" else ""
-    zip_suffix = "" if args.package_type == "universal" else f"-{args.package_type}"
-    create_recovery_zip(package_dir,
-                        BASE_DIR / f"HyperOS-{mode_prefix}-{args.device}-"
-                        f"{args.hyper_version}{variant_suffix}{zip_suffix}.zip")
+    # Default is no: CI uploads package/ as the artifact and GitHub zips it
+    # on download (artifact root = package contents, still flashable).
+    if args.package_zip == "yes":
+        mode_prefix = "port" if args.mode == "port" else "mod"
+        variant_suffix = "-fenrir" if args.variant == "fenrir" else ""
+        zip_suffix = "" if args.package_type == "universal" else f"-{args.package_type}"
+        create_recovery_zip(package_dir,
+                            BASE_DIR / f"HyperOS-{mode_prefix}-{args.device}-"
+                            f"{args.hyper_version}{variant_suffix}{zip_suffix}.zip")
+    else:
+        print("Package ZIP skipped (--package-zip no): package/ left for the "
+              "artifact upload, GitHub zips it on download.\n")
 
     print("HyperOS AutoPorter completed successfully!")
 

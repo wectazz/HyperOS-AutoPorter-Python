@@ -157,9 +157,11 @@ jobs:
             extracted_port/*.file_contexts
           if-no-files-found: warn
 
-      - name: Upload flashable ZIP
+      - name: Upload flashable package
         uses: actions/upload-artifact@v4
         with:
           name: package-${{ inputs.mode }}-${{ inputs.hyper_version }}-${{ inputs.package_type }}-${{ matrix.target }}
-          path: HyperOS-*-duchamp-*.zip
+          # package/ contents at the archive root (META-INF/ + images/), so
+          # the downloaded artifact is the flashable package GitHub zipped.
+          path: package/
           if-no-files-found: error
