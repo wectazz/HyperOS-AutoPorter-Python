@@ -5389,6 +5389,13 @@ def main() -> None:
     # Step 4g2b: Smali+res-patch Settings.apk via apktool (full aapt
     # recompile — the kashi merge adds NEW resources, which apkeditor
     # builds reject). Always, both modes.
+    # Debug artifact: keep the pre-patch Settings.apk next to the run outputs
+    # (CI uploads it; .gitignore'd). Remove this block once done debugging.
+    stock_settings = patch_root / SETTINGS_APK
+    if stock_settings.is_file():
+        shutil.copy2(stock_settings, BASE_DIR / "Settings_stock.apk")
+        print("Stock Settings.apk copied for the debug artifact "
+              "(Settings_stock.apk)\n")
     patch_apk_apktool(
         SETTINGS_APK, "settings",
         keyboard_replace_rules(["AvailableVirtualKeyboardFragment.smali"])
