@@ -1310,12 +1310,14 @@ DONOR_DIRS = [
 ]
 # Named files from one dir to another: (stock dir, port dir, [names]).
 DONOR_DIR_FILES = [
-    ("system_ext/apex", "system_ext/apex", [
-        "com.android.compos.apex",
-        "com.android.vndk.v31.apex",
-        "com.android.vndk.v33.apex",
-        "com.android.vndk.v34.apex",
-    ]),
+    # Stock APEX copies disabled: porting them into the port's
+    # system_ext/apex risks version mismatches — keep the port's own set.
+    # ("system_ext/apex", "system_ext/apex", [
+    #     "com.android.compos.apex",
+    #     "com.android.vndk.v31.apex",
+    #     "com.android.vndk.v33.apex",
+    #     "com.android.vndk.v34.apex",
+    # ]),
     ("product/overlay", "product/overlay", [
         "AospFrameworkResOverlay.apk",
         "DevicesAndroidOverlay.apk",
