@@ -3821,7 +3821,7 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                 f"apkeditor changed the entry set of {apk_path.name}: "
                 f"lost {missing[:5]}, "
                 f"added {unexpected[:5]}")
-        sign_apk_testkey(tmp)
+        _apply_build_signature(apk_path, tmp)
         os.replace(tmp, apk_path)
         print(f"APK smali patching done: {apk_path.name} "
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
@@ -3954,6 +3954,134 @@ def _rsa_sign_sha256(n: int, d: int, data: bytes) -> bytes:
     return sig.to_bytes(256, "big")
 
 
+def _rewrite_apk_zip(apk_path: Path, meta_files) -> None:
+    """Rewrite an APK with `meta_files` [(name, bytes)] written first and
+    every other entry byte-preserved (per-entry compress_type kept, STORED
+    lib/*.so page-aligned like zipalign -p). Atomic replace."""
+    tmp = apk_path.with_name(apk_path.name + ".signed")
+    if tmp.exists():
+        tmp.unlink()
+    with zipfile.ZipFile(apk_path) as zin:
+        infos = [i for i in zin.infolist()
+                 if not i.filename.upper().startswith("META-INF/")]
+        blobs = {i.filename: zin.read(i.filename) for i in infos}
+
+    def _align_extra(zout, name: str) -> bytes:
+        """Page-align padding for STORED lib/*.so entries: apps with
+        android:extractNativeLibs=false mmap .so straight from the APK,
+        and the installer rejects unaligned ones (res=-2, proven by an
+        install failure). Padding rides the local-header extra field,
+        exactly like zipalign -p 4096."""
+        cur = zout.fp.tell()
+        base = cur + 30 + len(name.encode("utf-8"))
+        return b"\x00" * ((-base) % 4096)
+
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
+        for name, blob in meta_files:
+            zi = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = 0o644 << 16
+            zout.writestr(zi, blob)
+        for info in infos:
+            zi = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+            zi.compress_type = info.compress_type
+            zi.external_attr = info.external_attr
+            zi.create_system = info.create_system
+            if (info.compress_type == zipfile.ZIP_STORED
+                    and info.filename.startswith("lib/")):
+                zi.extra = _align_extra(zout, info.filename)
+            zout.writestr(zi, blobs[info.filename])
+    os.replace(tmp, apk_path)
+
+
+def _original_signature_files(apk_path: Path):
+    """v1 signature blocks of an APK: MANIFEST.MF + every *.SF and
+    *.RSA/*.DSA/*.EC under META-INF. Empty when the APK has no v1
+    signature (v2+-only)."""
+    try:
+        with zipfile.ZipFile(apk_path) as z:
+            names = []
+            for n in z.namelist():
+                up = n.upper()
+                if not up.startswith("META-INF/"):
+                    continue
+                if (up == "META-INF/MANIFEST.MF" or up.endswith(".SF")
+                        or up.endswith((".RSA", ".DSA", ".EC"))):
+                    names.append(n)
+            has_block = any(n.upper().endswith((".RSA", ".DSA", ".EC"))
+                            for n in names)
+            has_sf = any(n.upper().endswith(".SF") for n in names)
+            if not (has_block and has_sf):
+                return []
+            return [(n, z.read(n)) for n in names]
+    except (zipfile.BadZipFile, OSError):
+        return []
+
+
+def _find_eocd(data: bytes) -> int:
+    """Offset of the ZIP End-Of-Central-Directory record."""
+    idx = data.rfind(b"PK\x05\x06", max(0, len(data) - 66000))
+    if idx == -1:
+        raise ValueError("EOCD not found")
+    return idx
+
+
+def _read_signing_block(apk_path: Path):
+    """APK Signing Block bytes (v2/v3/verity pairs) of an APK, or None."""
+    data = apk_path.read_bytes()
+    eocd = _find_eocd(data)
+    cd_offset = struct.unpack("<I", data[eocd + 16:eocd + 20])[0]
+    mpos = cd_offset - 16
+    if data[mpos:mpos + 16] != b"APK Sig Block 42":
+        return None
+    size = struct.unpack("<Q", data[mpos - 8:mpos])[0]
+    start = mpos - size + 8
+    if start < 0 or struct.unpack("<Q", data[start:start + 8])[0] != size:
+        return None
+    return data[start:cd_offset]
+
+
+def _insert_signing_block(apk_path: Path, block: bytes) -> None:
+    """Insert a (stale) APK Signing Block before the Central Directory and
+    fix the EOCD CD offset — viewers then report V1+V2+V3 (with digest
+    errors), like MT Manager's signature-preserving patches."""
+    data = apk_path.read_bytes()
+    eocd = _find_eocd(data)
+    cd_offset = struct.unpack("<I", data[eocd + 16:eocd + 20])[0]
+    if data[cd_offset:cd_offset + 4] != b"PK\x01\x02":
+        raise ValueError("central directory not found where expected")
+    out = bytearray(data[:cd_offset] + block + data[cd_offset:])
+    new_eocd = eocd + len(block)
+    struct.pack_into("<I", out, new_eocd + 16, cd_offset + len(block))
+    apk_path.write_bytes(out)
+
+
+def reuse_original_signature(src_apk: Path, apk_path: Path) -> bool:
+    """Replace a rebuilt APK's META-INF with the ORIGINAL v1 signature
+    blocks from src_apk (stock certificate + stale digests) instead of
+    re-signing, and transplant the original APK Signing Block (stale v2/v3)
+    so viewers report V1+V2+V3 with "signature verification failed" rather
+    than "unsigned" (MT-style). The stock signer is preserved (seinfo /
+    sharedUserId behave as stock). StrictJarVerifier.verifyMessageDigest is
+    neutered by DSV, so the mismatched v1 entry digests don't block loading.
+    Returns False when the source has no v1 signature — the caller then
+    falls back to the testkey."""
+    meta = _original_signature_files(src_apk)
+    if not meta:
+        return False
+    block = _read_signing_block(src_apk)
+    _rewrite_apk_zip(apk_path, meta)
+    if block:
+        _insert_signing_block(apk_path, block)
+        print(f"  kept original signature blocks in {apk_path.name} "
+              f"(stock cert, stale v1/v2/v3 digests as intended, "
+              f"{len(block)}-byte signing block).")
+    else:
+        print(f"  kept original signature blocks in {apk_path.name} "
+              f"(stock cert, stale digests as intended; no v2/v3 block).")
+    return True
+
+
 def sign_apk_testkey(apk_path: Path) -> None:
     """(Re-)sign an APK with the committed testkey (v1 JAR signing):
     drops stale META-INF, writes MANIFEST.MF + CERT.SF + CERT.RSA, atomic
@@ -4010,40 +4138,30 @@ def sign_apk_testkey(apk_path: Path) -> None:
         _der_set(signer_info),
     )
     rsa_b = _der_seq(oid_signed_data, _der_tlv(0xA0, signed_data))
-    tmp = apk_path.with_name(apk_path.name + ".signed")
-    if tmp.exists():
-        tmp.unlink()
-
-    def _align_extra(zout, name: str) -> bytes:
-        """Page-align padding for STORED lib/*.so entries: apps with
-        android:extractNativeLibs=false mmap .so straight from the APK,
-        and the installer rejects unaligned ones (res=-2, proven by an
-        install failure). Padding rides the local-header extra field,
-        exactly like zipalign -p 4096."""
-        cur = zout.fp.tell()
-        base = cur + 30 + len(name.encode("utf-8"))
-        return b"\x00" * ((-base) % 4096)
-
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
-        for name, blob in (("META-INF/MANIFEST.MF", manifest_b),
-                           ("META-INF/CERT.SF", sf_b),
-                           ("META-INF/CERT.RSA", rsa_b)):
-            zi = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
-            zi.compress_type = zipfile.ZIP_DEFLATED
-            zi.external_attr = 0o644 << 16
-            zout.writestr(zi, blob)
-        for info in infos:
-            zi = zipfile.ZipInfo(info.filename, date_time=info.date_time)
-            zi.compress_type = info.compress_type
-            zi.external_attr = info.external_attr
-            zi.create_system = info.create_system
-            if (info.compress_type == zipfile.ZIP_STORED
-                    and info.filename.startswith("lib/")):
-                zi.extra = _align_extra(zout, info.filename)
-            zout.writestr(zi, blobs[info.filename])
-    os.replace(tmp, apk_path)
+    _rewrite_apk_zip(apk_path, [
+        ("META-INF/MANIFEST.MF", manifest_b),
+        ("META-INF/CERT.SF", sf_b),
+        ("META-INF/CERT.RSA", rsa_b),
+    ])
     print(f"  signed {apk_path.name} with testkey "
           f"({apk_path.stat().st_size} bytes).")
+
+
+# Keep the stock (original) META-INF instead of re-signing: viewers then
+# report a signature verification failure with the stock certificate, and
+# the stock signer is preserved (seinfo/sharedUserId behave as stock).
+# Requires the DSV patch that neuters StrictJarVerifier.verifyMessageDigest —
+# with --dsv no the rebuilt APKs must stay properly signed with the testkey.
+REUSE_ORIGINAL_SIGNATURES = True
+
+
+def _apply_build_signature(src_apk: Path, tmp: Path) -> None:
+    """Signature for a rebuilt APK: keep the original v1 blocks when DSV is
+    on (stock cert + stale digests; viewers report a verification failure
+    instead of "unsigned"), else re-sign with the testkey."""
+    if REUSE_ORIGINAL_SIGNATURES and reuse_original_signature(src_apk, tmp):
+        return
+    sign_apk_testkey(tmp)
 
 
 def ensure_apktool_framework() -> None:
@@ -4188,7 +4306,7 @@ def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
                 f"apktool changed the entry set of {apk_path.name}: "
                 f"lost {missing[:5]}, "
                 f"added {unexpected[:5]}")
-        sign_apk_testkey(tmp)
+        _apply_build_signature(apk_path, tmp)
         os.replace(tmp, apk_path)
         print(f"APK patching done: {apk_path.name} "
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
@@ -4298,7 +4416,7 @@ def patch_apk_res(apk_rel: str, tag: str, res_patches,
         # Content changed -> old META-INF digests are stale; re-sign so cert
         # collection succeeds (launcher/overlays must parse; DSV covers the
         # key mismatch, same as the smali paths).
-        sign_apk_testkey(tmp)
+        _apply_build_signature(apk_path, tmp)
         os.replace(tmp, apk_path)
         print(f"APK res patching done: {apk_path.name} "
               f"({apk_path.stat().st_size} bytes, {len(new_entries)} entries).\n")
@@ -5150,6 +5268,11 @@ def main() -> None:
               "+ patched LK) plus the verified-boot props (default: base)",
     )
     args = parser.parse_args()
+    # Reuse the stock META-INF only when DSV neuters strict v1 digest checks
+    # (StrictJarVerifier.verifyMessageDigest); otherwise rebuilt APKs must be
+    # properly signed or they won't parse.
+    global REUSE_ORIGINAL_SIGNATURES
+    REUSE_ORIGINAL_SIGNATURES = args.dsv == "yes"
     # Firmware region + port codename: port mode reads the PORT firmware,
     # mod mode the STOCK one (CN = China, anything else = global; codename
     # e.g. warhol from warhol_global-ota_full-*.zip, chagall otherwise).
