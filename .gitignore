@@ -11,6 +11,7 @@ venv/
 payload.bin
 
 # local APK review copies (hundreds of MB, must never be committed)
+Settings.apk
 Settings_stock.apk
 Settings_patched.apk
 MiuiHome.apk

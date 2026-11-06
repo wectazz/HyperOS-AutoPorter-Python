@@ -4279,6 +4279,47 @@ def ensure_apktool_framework() -> None:
     print()
 
 
+# <header> rows dropped from Settings' res/xml/settings_headers.xml.
+# Matched by intent *target strings*: the @7F resource ids around them are
+# build-specific (they shift between firmware versions), the class names
+# are stable.
+SETTINGS_HEADER_REMOVALS = (
+    # "Wallpaper" row -> thememanager Super Wallpaper activity.
+    "com.android.thememanager.settings.superwallpaper.activity."
+    "WallpaperSettingSupportSuperWallpaperActivity",
+)
+
+
+def remove_settings_headers(work_root: Path) -> None:
+    """Delete <header> blocks from res/xml/settings_headers.xml whose
+    <intent> points at an entry we do not ship (SETTINGS_HEADER_REMOVALS).
+    Matches the target class string, never `@7F...` resource ids (those
+    differ per build). Idempotent: a re-run finds nothing and only warns."""
+    path = work_root / "res" / "xml" / "settings_headers.xml"
+    if not path.is_file():
+        print("  [warn] settings_headers.xml not found, header removal skipped")
+        return
+    text = path.read_text()
+    # <header ...> ... </header> only — self-closing <header ... /> has no body
+    block = re.compile(
+        r"[ \t]*<header\b(?![^>]*/>)[^>]*>.*?</header>[ \t]*\r?\n?", re.S)
+    removed = 0
+
+    def _repl(match):
+        nonlocal removed
+        if any(needle in match.group(0) for needle in SETTINGS_HEADER_REMOVALS):
+            removed += 1
+            return ""
+        return match.group(0)
+
+    new_text = block.sub(_repl, text)
+    if not removed:
+        print("  [warn] settings header target not found (already removed?)")
+        return
+    path.write_text(new_text)
+    print(f"  removed {removed} settings header(s): super wallpaper entry")
+
+
 def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
                       build_root: Path, array_patches=None,
                       res_array_funcs=None, method_funcs=None,
@@ -4333,6 +4374,7 @@ def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
         _apply_apk_method_funcs(dex_dirs, method_funcs, work_root)
         if kashi:
             apply_kashi_overlay(work_root, dex_dirs)
+        remove_settings_headers(work_root)
         # 3. rebuild into a temp file (atomic replace keeps the old APK on
         # failure), with one self-healing retry: a fresh apktool install
         # auto-fetches its android framework on first build still carrying
@@ -4786,6 +4828,98 @@ def build_sidecars(partitions: List[str], unpacked_root: Path, img_dir: Path,
     print()
 
 
+_EROFS_IFMT = frozenset((0o100000, 0o040000, 0o120000, 0o020000,
+                         0o060000, 0o010000, 0o140000))
+
+
+def _validate_erofs_image(img_path: Path) -> None:
+    """Fail fast on an EROFS image the device kernel would reject.
+
+    EROFS keeps "inline data" (a symlink target, or the tail of a file) right
+    after the inode's xattrs, inside the same metadata block. Linux rejects
+    an inode whose inline data crosses that block boundary
+    (fs/erofs/inode.c: "inline data cross block boundary @ nid N" ->
+    -EFSCORRUPTED, i.e. EUCLEAN). upstream erofs-utils checked that
+    boundary with a modulo form that wraps when the inode itself
+    (inode + xattr, 48 bytes) starts in the block's last 32-byte slot, so
+    an inode at blkoff 4064 kept its xattr inline tail in the next block:
+    on device the lookup died with "Structure needs cleaning" — that is
+    exactly how five camera symlinks in /vendor/lib64 (libcam.hal3a.so,
+    libcamalgo.aics.so, libcamalgo.vaics.so, libaiseg_cache.so,
+    libfeature.vsdof.fd_info_provider.so) became unreadable, so
+    camerahalserver could not link its providers and the system reported
+    zero cameras. The vendored mkfs.erofs is patched (__erofs_battach uses
+    the block start as the reference and falls back to noinline); this scan
+    keeps any such inode from ever shipping again.
+    """
+    erofs_magic = b"\xe2\xe1\xf5\xe0"
+    with open(img_path, "rb") as f:
+        f.seek(1024)
+        sb = f.read(128)
+        if len(sb) < 128 or sb[:4] != erofs_magic:
+            raise RuntimeError(f"{img_path.name}: not an EROFS image")
+        blksz = 1 << sb[0x0c]
+        blocks = struct.unpack_from("<I", sb, 36)[0]
+        meta = struct.unpack_from("<I", sb, 40)[0]
+        f.seek(0, os.SEEK_END)
+        total = f.tell()
+        last = min(blocks, total // blksz)
+        f.seek(meta * blksz)
+        remaining = (last - meta) * blksz
+        buf = b""
+        blk_idx = meta
+        bad: List[str] = []
+        # Every 32-byte slot, not just the block's last few: an inode at
+        # blkoff 4032 plus a long symlink target overflows too. The field
+        # sanity checks below keep dirents/xattr garbage out (verified over
+        # five real images: no false positives).
+        slots = range(blksz // 32)
+        while remaining > 0:
+            chunk = f.read(min(1 << 20, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            buf += chunk
+            while len(buf) >= blksz:
+                blk, buf = buf[:blksz], buf[blksz:]
+                for slot in slots:
+                    off = slot * 32
+                    fmt, xic, mode, nlink = struct.unpack_from("<HHHH", blk, off)
+                    if fmt & ~0x7 or not 1 <= nlink <= 4096:
+                        continue
+                    ver, dl = fmt & 1, fmt >> 1
+                    if dl > 3 or (mode & 0o170000) not in _EROFS_IFMT:
+                        continue
+                    if ver == 0:
+                        size, res = struct.unpack_from("<II", blk, off + 8)
+                        if res or struct.unpack_from("<I", blk, off + 28)[0]:
+                            continue
+                        uid, gid = struct.unpack_from("<HH", blk, off + 24)
+                        isize = 32
+                    else:
+                        size = struct.unpack_from("<Q", blk, off + 8)[0]
+                        if struct.unpack_from("<H", blk, off + 6)[0]:
+                            continue
+                        uid, gid = struct.unpack_from("<II", blk, off + 24)
+                        isize = 64
+                    if uid > 200000 or gid > 200000:
+                        continue
+                    # FLAT_INLINE only; mkfs writes i_u.raw_blkaddr =
+                    # 0xffffffff for those, which keeps garbage slots out.
+                    if dl != 2 or struct.unpack_from("<I", blk, off + 16)[0] != 0xFFFFFFFF:
+                        continue
+                    xisize = 0 if xic == 0 else 12 + (xic - 1) * 4
+                    if off + isize + xisize + (size % blksz) > blksz:
+                        bad.append(f"nid {blk_idx * (blksz // 32) + slot}"
+                                   f" (blkoff {off}, size {size % blksz})")
+                blk_idx += 1
+    if bad:
+        raise RuntimeError(
+            f"{img_path.name}: {len(bad)} EROFS inode(s) have inline data "
+            f"crossing a block boundary and the kernel will reject them: "
+            f"{', '.join(bad[:5])}")
+
+
 def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = False,
                             free_mb: int = 150) -> None:
     """Rebuild a partition .img from an unpacked tree, matching the original format.
@@ -4911,6 +5045,8 @@ def rebuild_partition_image(img_path: Path, src_dir: Path, force_ext4: bool = Fa
             print(f"Rebuild of {img_path.name} failed (exit {proc.returncode}). Last log lines:")
             print("\n".join(proc.stdout.splitlines()[-30:]))
             raise subprocess.CalledProcessError(proc.returncode, proc.args)
+        if fmt == "erofs" and not force_ext4:
+            _validate_erofs_image(tmp_path)
         os.replace(tmp_path, img_path)
     finally:
         tmp_path.unlink(missing_ok=True)
