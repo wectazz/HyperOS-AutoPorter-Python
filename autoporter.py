@@ -3985,15 +3985,15 @@ def _rewrite_apk_zip(apk_path: Path, meta_files) -> None:
                  if not i.filename.upper().startswith("META-INF/")]
         blobs = {i.filename: zin.read(i.filename) for i in infos}
 
-    def _align_extra(zout, name: str) -> bytes:
-        """Page-align padding for STORED lib/*.so entries: apps with
-        android:extractNativeLibs=false mmap .so straight from the APK,
-        and the installer rejects unaligned ones (res=-2, proven by an
-        install failure). Padding rides the local-header extra field,
-        exactly like zipalign -p 4096."""
+    def _align_extra(zout, name: str, align: int) -> bytes:
+        """Padding for STORED entries, like zipalign: uncompressed dex must
+        be 4-byte aligned (ART loads it straight from the APK; misaligned
+        dex fails to open -> ClassNotFoundException, proven on device), and
+        STORED lib/*.so must be page-aligned (extractNativeLibs=false mmap,
+        res=-2 otherwise). Padding rides the local-header extra field."""
         cur = zout.fp.tell()
         base = cur + 30 + len(name.encode("utf-8"))
-        return b"\x00" * ((-base) % 4096)
+        return b"\x00" * ((-base) % align)
 
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
         for name, blob in meta_files:
@@ -4006,9 +4006,9 @@ def _rewrite_apk_zip(apk_path: Path, meta_files) -> None:
             zi.compress_type = info.compress_type
             zi.external_attr = info.external_attr
             zi.create_system = info.create_system
-            if (info.compress_type == zipfile.ZIP_STORED
-                    and info.filename.startswith("lib/")):
-                zi.extra = _align_extra(zout, info.filename)
+            if info.compress_type == zipfile.ZIP_STORED:
+                align = 4096 if info.filename.startswith("lib/") else 4
+                zi.extra = _align_extra(zout, info.filename, align)
             zout.writestr(zi, blobs[info.filename])
     os.replace(tmp, apk_path)
 
