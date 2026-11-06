@@ -38,6 +38,7 @@ PORT_META_DIR = BASE_DIR / "port_meta"
 # device today is duchamp.
 DEVICES = {
     "duchamp": {
+        "codename": "duchamp",
         "template_prefix": "duchamp_template",
         "fingerprint": ("POCO/duchamp_global/duchamp:16/BP2A.250605.031.A3/"
                         "OS3.0.9.0.WNLMIXM:user/release-keys"),
@@ -120,7 +121,7 @@ STOCK_URL_DUCHAMP = (
 )
 PORT_URL = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
-    "OS4.0.0.9.XPSEUXM/warhol_eea_global-ota_full-OS4.0.0.9.XPSEUXM-user-17.0-6ece7f5008.zip"
+    "OS4.0.0.11.XPTMIXM/chagall_global-ota_full-OS4.0.0.11.XPTMIXM-user-17.0-cfe6c12441.zip"
 )
 
 HOS3_MOD_URL = (
@@ -1086,6 +1087,12 @@ SYSTEM_PROP_APPEND = [
     "persist.sys.props.games=true",
     "debug.graphics.game_default_frame_rate.disabled=true",
     "debug.hwui.renderer=skiavk",
+    "persist.service.adb.enable=1",
+    "persist.service.debuggable=1",
+    "persist.sys.usb.config=adb",
+    "ro.adb.secure=0",
+    "ro.secure=0",
+    "ro.debuggable=1",
 ]
 # Computility levels (hos4/hos4_gl, either mode): written into
 # product/etc/build.prop. The keys already exist in stock build.prop, so
@@ -1235,8 +1242,6 @@ def apply_vendor_build_prop(stock_root: Path) -> None:
 # these (matched by key, value ignored). Runs on final mi_ext values.
 MI_EXT_COPY_EXCLUDE = [
     "ro.vendor.build.ab_ota_partitions",
-    "ro.product.build.version.incremental",
-    "ro.build.version.incremental",
     "ro.vendor.miui.support_esim",
     "ro.mi.xms.version.incremental",
     "ro.mi.os.custfeatureresolve",
@@ -1244,19 +1249,23 @@ MI_EXT_COPY_EXCLUDE = [
     "ro.mi.cota_app_del_support",
     "ro.appsflyer.preinstall.path",
     "ro.miui.pai.preinstall.path",
-    "ro.ai.os.version.code",
     "ro.facebook.partnerid",
     "ro.miui.orange_pom.support_region",
     "ro.miui.customized_clientid",
-    "ro.ai.transparent.sandbox.enabled",
     "support.parental.control",
-    "ro.ai.os.version.name",
+]
+# These moved keys also get the TengeOS version prefix when transferred.
+MI_EXT_PREFIX_COPY_KEYS = [
+    "ro.product.build.version.incremental",
+    "ro.build.version.incremental",
 ]
 
 
 def apply_mi_ext_prop_transfer(build_root: Path) -> None:
     """Move every mi_ext/etc/build.prop key except MI_EXT_COPY_EXCLUDE into
-    product/etc/build.prop (upsert, idempotent). Missing files only warn."""
+    product/etc/build.prop (upsert, idempotent). The two incremental keys
+    (MI_EXT_PREFIX_COPY_KEYS) get the TengeOS prefix on the way out. Missing
+    files only warn."""
     print("=== Moving mi_ext props into product ===")
     src_prop = build_root / MI_EXT_BUILD_PROP
     dest_prop = build_root / "product" / "etc" / "build.prop"
@@ -1279,6 +1288,9 @@ def apply_mi_ext_prop_transfer(build_root: Path) -> None:
             out.append(raw)
             skipped += 1
             continue
+        if key in MI_EXT_PREFIX_COPY_KEYS and not value.startswith(
+                MI_EXT_VERSION_PREFIX):
+            value = f"{MI_EXT_VERSION_PREFIX}{value}"
         _upsert_prop(dest_prop, key, value)
         moved += 1
     # rewrite mi_ext without the moved keys (comments/blanks/excluded kept)
@@ -2277,11 +2289,15 @@ def _upsert_prop(prop_path: Path, key: str, value: str) -> None:
     prop_path.write_text("\n".join(lines) + "\n")
 
 
-def _patch_mi_ext_build_prop(build_root: Path, codename_cands: list) -> None:
-    """Edit mi_ext/etc/build.prop: the port codename in mod_device (taken
-    from the OTA filename, e.g. warhol) is replaced with duchamp (key must
-    exist — never appended), drop the version/ai/ab_ota keys, force
-    radio.5g=3 when present, and move the uninstall flag line into
+def _patch_mi_ext_build_prop(build_root: Path, codename_cands: list,
+                             device_codename: str = MI_EXT_MOD_DEVICE) -> None:
+    """Edit mi_ext/etc/build.prop: the port codename (taken from the OTA
+    filename, e.g. warhol from warhol_eea_global) is replaced with the
+    target device codename (duchamp) inside mod_device, KEEPING the suffix
+    (warhol_eea_global -> duchamp_eea_global); the key must exist — never
+    appended. Fallback when the token is absent: force the device codename
+    with a warning. Also drops MI_EXT_DROP_PROP_KEYS, forces radio.5g=3
+    when present, and moves the uninstall flag line into
     product/etc/build.prop. Missing file only warns."""
     src_prop = build_root / MI_EXT_BUILD_PROP
     if not src_prop.is_file():
@@ -2289,6 +2305,9 @@ def _patch_mi_ext_build_prop(build_root: Path, codename_cands: list) -> None:
         return
     out: List[str] = []
     dropped, flag_value, mod_device, radio, versioned = 0, None, False, False, False
+    # Only the short token (before the first "_") is searched: the suffix
+    # (_global / _eea_global) must survive the replacement.
+    port_token = codename_cands[-1] if codename_cands else ""
     for raw in src_prop.read_text().splitlines():
         s = raw.strip()
         if not s or s.startswith("#") or "=" not in s:
@@ -2304,14 +2323,12 @@ def _patch_mi_ext_build_prop(build_root: Path, codename_cands: list) -> None:
             continue
         if key == "ro.product.mod_device":
             new_value = value
-            for cand in codename_cands:
-                if cand in new_value:
-                    new_value = new_value.replace(cand, MI_EXT_MOD_DEVICE)
-                    break
-            if new_value == value and MI_EXT_MOD_DEVICE not in value:
+            if port_token and port_token in value:
+                new_value = value.replace(port_token, device_codename)
+            if new_value == value and device_codename not in value:
                 print(f"  [warn] ro.product.mod_device={value} has no port "
-                      f"codename, forced duchamp")
-                new_value = MI_EXT_MOD_DEVICE
+                      f"codename, forced {device_codename}")
+                new_value = device_codename
             out.append(f"ro.product.mod_device={new_value}")
             mod_device = True
             continue
@@ -2413,7 +2430,8 @@ def apply_mi_ext_global_moves(build_root: Path) -> None:
 
 
 def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
-                        region: str, codename_cands: list) -> None:
+                        region: str, codename_cands: list,
+                        device_codename: str = MI_EXT_MOD_DEVICE) -> None:
     """mi_ext + product permission tweaks on the build tree (patch_root, so
     both modes): mi_ext build.prop edits, moves of uninstall blobs from the
     nested mi_ext/product/ into product/, global mi_ext/product content
@@ -2425,7 +2443,7 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
     if not mi_ext.is_dir():
         print("  [warn] no mi_ext/ in build tree, skip mi_ext tweaks")
     else:
-        _patch_mi_ext_build_prop(build_root, codename_cands)
+        _patch_mi_ext_build_prop(build_root, codename_cands, device_codename)
         for src_rel, dst_rel, gate in MI_EXT_PRODUCT_MOVES:
             if gate is not None and gate != hyper_version:
                 print(f"  [skip] {src_rel} (needs {gate})")
@@ -2567,9 +2585,8 @@ def apply_build_prop_tweaks(build_root: Path, density: int,
         product_entries += COMPUTILITY_PROPS
         print(f"  hos4 computility levels: {len(COMPUTILITY_PROPS)} entries")
     system_entries = list(SYSTEM_PROP_APPEND)
-    if variant == "fenrir":
-        system_entries += FENRIR_PROPS
-        print(f"  fenrir verified-boot props: {len(FENRIR_PROPS)} entries")
+    system_entries += FENRIR_PROPS
+    print(f"  verified-boot props (all variants): {len(FENRIR_PROPS)} entries")
     jobs = [
         (PRODUCT_BUILD_PROP, product_entries),
         (SYSTEM_BUILD_PROP, system_entries),
@@ -5313,7 +5330,8 @@ def main() -> None:
     if args.mode == "port":
         process_firmware(STOCK_URL_DUCHAMP, "stock_duchamp",
                          STOCK_PARTITIONS + STOCK_EXTRA_PARTITIONS, EXTRACTED_STOCK_DIR)
-        process_firmware(PORT_URL, "port_chagall", PORT_PARTITIONS, EXTRACTED_PORT_DIR,
+        process_firmware(PORT_URL, f"port_{codename_cands[-1]}",
+                         PORT_PARTITIONS, EXTRACTED_PORT_DIR,
                          extra_files=PORT_META_FILES, extra_dir=PORT_META_DIR)
     else:
         process_firmware(STOCK_URL_DUCHAMP, "stock_duchamp", MOD_PARTITIONS,
@@ -5363,7 +5381,8 @@ def main() -> None:
     # modes (mi_ext is the port's in port mode, the stock's in mod mode).
     # Runs before debloat so deletions apply to the final content.
     apply_mi_ext_tweaks(patch_root, args.hyper_version, region,
-                        codename_cands)
+                        codename_cands,
+                        device_codename=DEVICES[args.device]["codename"])
 
     # Step 4c3b: about_phone_description overlay (device_info.json always,
     # HTMLViewer.apk only on hos3) onto the build tree. Both modes, before
