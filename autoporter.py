@@ -12,6 +12,7 @@ import sys
 import shutil
 import tempfile
 import zipfile
+import zlib
 import subprocess
 from collections import Counter
 from pathlib import Path
@@ -934,6 +935,26 @@ def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
             shutil.copy2(src, dest)
             copied += 1
         print(f"  copied {copied} kashi smali files into {dex_target.name}/")
+        # The ALPHA block below swaps IS_INTERNATIONAL_BUILD for a field
+        # that may be unreferenced in this dex (IS_ALPHA_BUILD). classes2
+        # sits exactly at the dex field limit on some builds (65536 ids =
+        # indices 0..65535), so one more field overflows the 16-bit field
+        # index and smali dies mid-write, leaving a truncated classes2.dex
+        # with a zeroed header (device: ClassNotFoundException for
+        # com.android.settings.SettingsApplication). Host MiuiSettings in
+        # the kashi dex instead (usually classes12 — small, with headroom
+        # in every pool); ART loads all classes*.dex alike.
+        for src_dir in dex_dirs:
+            src = src_dir / "com/android/settings/MiuiSettings.smali"
+            if not src.is_file():
+                continue
+            dst = dex_target / "com/android/settings/MiuiSettings.smali"
+            if src != dst:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                print(f"  moved MiuiSettings.smali {src_dir.name}/ -> "
+                      f"{dex_target.name}/ (dex field-limit headroom)")
+            break
     # 2. new/overwritten res into res/ (miui_version_card.xml included:
     # full replacement rides the same overwrite copy)
     res_root = work_root / "res"
@@ -3762,6 +3783,36 @@ def _apply_apk_res_replace_patches(work_root: Path, res_replace_patches) -> None
             print(f"  [warn] no res replace match for {glob}")
 
 
+def _validate_apk_dexes(apk_path: Path) -> None:
+    """Fail fast when a rebuilt APK carries an unreadable classes*.dex.
+    smali dies mid-write when an instruction operand needs a 16-bit index
+    that no longer fits (e.g. a new field added to a dex already at the
+    65536-field limit), leaving a truncated dex whose 112-byte header is
+    zeroed — and apktool can still exit 0 when it reuses that stale
+    intermediate, so the APK shipped without a loadable dex (device:
+    ClassNotFoundException for com.android.settings.SettingsApplication).
+    Checks magic, header size, declared file_size and the adler32."""
+    with zipfile.ZipFile(apk_path) as z:
+        for name in sorted(z.namelist()):
+            if not (name.startswith("classes") and name.endswith(".dex")):
+                continue
+            blob = z.read(name)
+            if len(blob) < 0x70 or blob[:4] != b"dex\n":
+                raise RuntimeError(
+                    f"{apk_path.name}: {name} is not a valid dex "
+                    f"(header {blob[:8]!r})")
+            header_size = struct.unpack("<I", blob[36:40])[0]
+            file_size = struct.unpack("<I", blob[32:36])[0]
+            checksum = struct.unpack("<I", blob[8:12])[0]
+            if header_size != 0x70 or file_size != len(blob):
+                raise RuntimeError(
+                    f"{apk_path.name}: {name} is truncated "
+                    f"(declared {file_size} bytes, actual {len(blob)})")
+            if (zlib.adler32(blob[12:]) & 0xFFFFFFFF) != checksum:
+                raise RuntimeError(
+                    f"{apk_path.name}: {name} checksum mismatch")
+
+
 def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                     build_root: Path, array_patches=None,
                     res_array_funcs=None, method_funcs=None,
@@ -3840,6 +3891,7 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                 f"apkeditor changed the entry set of {apk_path.name}: "
                 f"lost {missing[:5]}, "
                 f"added {unexpected[:5]}")
+        _validate_apk_dexes(tmp)
         _apply_build_signature(apk_path, tmp)
         os.replace(tmp, apk_path)
         print(f"APK smali patching done: {apk_path.name} "
@@ -4298,6 +4350,10 @@ def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
             if attempt == 1 and "is private" in proc.stdout:
                 print("apktool framework still carries private flags, "
                       "de-privating and retrying...")
+                # The failed first pass may have left half-written dexes in
+                # apktool's build cache; the retry would silently reuse them
+                # (that is how a truncated classes2.dex once shipped).
+                shutil.rmtree(work_root / "build", ignore_errors=True)
                 ensure_apktool_framework()
                 continue
             print(f"apktool build {apk_path.name} failed "
@@ -4325,6 +4381,7 @@ def patch_apk_apktool(apk_rel: str, tag: str, replace_patches,
                 f"apktool changed the entry set of {apk_path.name}: "
                 f"lost {missing[:5]}, "
                 f"added {unexpected[:5]}")
+        _validate_apk_dexes(tmp)
         _apply_build_signature(apk_path, tmp)
         os.replace(tmp, apk_path)
         print(f"APK patching done: {apk_path.name} "
@@ -4432,6 +4489,7 @@ def patch_apk_res(apk_rel: str, tag: str, res_patches,
                 f"apkeditor changed the entry set of {apk_path.name}: "
                 f"lost {sorted(orig_entries - new_entries)[:5]}, "
                 f"added {sorted(new_entries - orig_entries)[:5]}")
+        _validate_apk_dexes(tmp)
         # Content changed -> old META-INF digests are stale; re-sign so cert
         # collection succeeds (launcher/overlays must parse; DSV covers the
         # key mismatch, same as the smali paths).
