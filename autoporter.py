@@ -1392,14 +1392,29 @@ def patch_hyper_os_system_lib(build_root: Path) -> None:
     off = text[4] + (target - text[3])
     new = bytes.fromhex("00008052c0035fd61f2003d51f2003d5")
     if data[off:off + 8] == new[:8]:
-        print("  already non-global, skip\n")
-        return
-    if data[off:off + 4] != bytes.fromhex("fd7bbfa9"):
+        print("  already non-global, skip")
+    elif data[off:off + 4] != bytes.fromhex("fd7bbfa9"):
         print(f"  [warn] unexpected prologue {data[off:off+16].hex()}, skip\n")
         return
-    data[off:off + 16] = new
-    path.write_bytes(data)
-    print(f"  {path.name}: MiuiOsBuild_is_global_build -> false\n")
+    else:
+        data[off:off + 16] = new
+        path.write_bytes(data)
+        print(f"  {path.name}: MiuiOsBuild_is_global_build -> false")
+    # System apps also get a legacy nativeLibraryDir (<codePath>/lib/<abi>)
+    # that the linker searches before /system_ext. Stage the patched copy
+    # next to MiuiHome.apk so the launcher loads it without touching the
+    # system-wide copy (which is kept patched as well for parity).
+    home_apk = build_root / "product" / "priv-app" / "MiuiHome" / "MiuiHome.apk"
+    if home_apk.is_file():
+        home_lib = home_apk.parent / "lib" / "arm64"
+        home_lib.mkdir(parents=True, exist_ok=True)
+        staged = home_lib / path.name
+        shutil.copy2(path, staged)
+        os.chmod(staged, 0o644)
+        print(f"  staged {staged.relative_to(build_root)} for MiuiHome")
+    else:
+        print("  [warn] product/priv-app/MiuiHome/MiuiHome.apk not found, skip staging")
+    print()
 
 
 def apply_selinux_keystore_rules(build_root: Path, stock_root: Path) -> None:
