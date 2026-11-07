@@ -657,6 +657,75 @@ SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_NEW = (
 # idempotency marker (smali ignores it).
 SETTINGS_DEVICE_PARAMS_MEMORY_MARKER = (
     "    # MIUI14 compact grid: memory card stays type 0\n")
+# Card titles come from HTMLViewer's BASIC_ITEMS (Title) and double as the
+# JSON keys for Summary, so translating them in the APK/JSON would break the
+# lookup. Localize at the display site instead: initData() builds one card per
+# BasicItems entry with a known Index (0=CPU, 1=battery, 2=camera, 3=screen,
+# 4=resolution, 5=RAM), so overwrite the title by index. Same order on hos3
+# and hos4. Idempotent via the marker comment (smali ignores it).
+SETTINGS_DEVICE_PARAMS_TITLES_MARKER = (
+    "    # localized card titles (About phone device params)\n")
+SETTINGS_DEVICE_PARAMS_TITLES_OLD = (
+    "    invoke-static {v1}, Lcom/android/settings/device/"
+    "ParseMiShopDataUtils;->getItemTitle(Lorg/json/JSONObject;)"
+    "Ljava/lang/String;\n\n"
+    "    move-result-object v5\n")
+SETTINGS_DEVICE_PARAMS_TITLES_NEW = (
+    SETTINGS_DEVICE_PARAMS_TITLES_OLD + "\n"
+    + SETTINGS_DEVICE_PARAMS_TITLES_MARKER
+    + """    const/4 v7, 0x0
+
+    if-ne v4, v7, :cond_title_cpu
+
+    const-string v5, "Процессор"
+
+    goto :title_done
+
+    :cond_title_cpu
+    const/4 v7, 0x1
+
+    if-ne v4, v7, :cond_title_battery
+
+    const-string v5, "Ёмкость батареи"
+
+    goto :title_done
+
+    :cond_title_battery
+    const/4 v7, 0x2
+
+    if-ne v4, v7, :cond_title_camera
+
+    const-string v5, "Характеристики камеры"
+
+    goto :title_done
+
+    :cond_title_camera
+    const/4 v7, 0x3
+
+    if-ne v4, v7, :cond_title_screen
+
+    const-string v5, "Размер экрана"
+
+    goto :title_done
+
+    :cond_title_screen
+    const/4 v7, 0x4
+
+    if-ne v4, v7, :cond_title_resolution
+
+    const-string v5, "Разрешение"
+
+    goto :title_done
+
+    :cond_title_resolution
+    const/4 v7, 0x5
+
+    if-ne v4, v7, :title_done
+
+    const-string v5, "ОЗУ"
+
+    :title_done
+""")
 # Camera card labels: DeviceBasicInfoPresenter.updateCameraInfo does
 # String.format(camera_front, pixel).replace(" ", ""), so "Фронтальная %s"
 # renders as "Фронтальная16MP". Put a non-breaking space after the colon —
@@ -3463,6 +3532,19 @@ def patch_settings_memory_type(text: str) -> tuple:
             + text[pos + len(settype):], 1)
 
 
+def patch_settings_card_titles(text: str) -> tuple:
+    """Localize the About-phone device params card titles (CPU, battery,
+    screen, resolution, RAM) by BasicItems Index. The HTMLViewer/JSON keys
+    stay English (they must match for Summary lookup). Idempotent via the
+    marker comment (smali ignores it)."""
+    if SETTINGS_DEVICE_PARAMS_TITLES_MARKER in text:
+        return text, 1  # already patched
+    if SETTINGS_DEVICE_PARAMS_TITLES_OLD not in text:
+        return text, 0
+    return text.replace(SETTINGS_DEVICE_PARAMS_TITLES_OLD,
+                        SETTINGS_DEVICE_PARAMS_TITLES_NEW, 1), 1
+
+
 def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> dict:
     """Copy dsv/<key>/<dex>/*.smali into the matching decompiled dex dir, at the
     path from each file's own .class declaration. Classes already present in
@@ -5879,7 +5961,9 @@ def main() -> None:
                       (["DeviceBasicInfoPresenter$1.smali"],
                        patch_settings_index_map),
                       (["DeviceBasicInfoPresenter.smali"],
-                       patch_settings_memory_type)],
+                       patch_settings_memory_type),
+                      (["DeviceBasicInfoPresenter.smali"],
+                       patch_settings_card_titles)],
         res_replace_patches=SETTINGS_CAMERA_COLON_PATCHES,
         kashi=True,
         expected_new_entries=KASHI_EXPECTED_NEW_ENTRIES,
