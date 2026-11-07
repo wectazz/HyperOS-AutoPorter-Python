@@ -661,8 +661,9 @@ SETTINGS_DEVICE_PARAMS_MEMORY_MARKER = (
 # JSON keys for Summary, so translating them in the APK/JSON would break the
 # lookup. Localize at the display site instead: initData() builds one card per
 # BasicItems entry with a known Index (0=CPU, 1=battery, 2=camera, 3=screen,
-# 4=resolution, 5=RAM), so overwrite the title by index. Same order on hos3
-# and hos4. Idempotent via the marker comment (smali ignores it).
+# 4=resolution, 5=RAM), so overwrite the title by index. English titles are
+# used by default; Russian ones when the system language is `ru`. Same order
+# on hos3 and hos4. Idempotent via the marker comment (smali ignores it).
 SETTINGS_DEVICE_PARAMS_TITLES_MARKER = (
     "    # localized card titles (About phone device params)\n")
 SETTINGS_DEVICE_PARAMS_TITLES_OLD = (
@@ -673,7 +674,77 @@ SETTINGS_DEVICE_PARAMS_TITLES_OLD = (
 SETTINGS_DEVICE_PARAMS_TITLES_NEW = (
     SETTINGS_DEVICE_PARAMS_TITLES_OLD + "\n"
     + SETTINGS_DEVICE_PARAMS_TITLES_MARKER
-    + """    const/4 v7, 0x0
+    + """    invoke-static {}, Ljava/util/Locale;->getDefault()Ljava/util/Locale;
+
+    move-result-object v6
+
+    invoke-virtual {v6}, Ljava/util/Locale;->getLanguage()Ljava/lang/String;
+
+    move-result-object v6
+
+    const-string v7, "ru"
+
+    invoke-virtual {v6, v7}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+
+    move-result v6
+
+    if-nez v6, :cond_title_ru
+
+    const/4 v7, 0x0
+
+    if-ne v4, v7, :cond_title_en_cpu
+
+    const-string v5, "CPU"
+
+    goto :title_done
+
+    :cond_title_en_cpu
+    const/4 v7, 0x1
+
+    if-ne v4, v7, :cond_title_en_battery
+
+    const-string v5, "Battery capacity"
+
+    goto :title_done
+
+    :cond_title_en_battery
+    const/4 v7, 0x2
+
+    if-ne v4, v7, :cond_title_en_camera
+
+    const-string v5, "Camera specs"
+
+    goto :title_done
+
+    :cond_title_en_camera
+    const/4 v7, 0x3
+
+    if-ne v4, v7, :cond_title_en_screen
+
+    const-string v5, "Screen size"
+
+    goto :title_done
+
+    :cond_title_en_screen
+    const/4 v7, 0x4
+
+    if-ne v4, v7, :cond_title_en_resolution
+
+    const-string v5, "Resolution"
+
+    goto :title_done
+
+    :cond_title_en_resolution
+    const/4 v7, 0x5
+
+    if-ne v4, v7, :title_done
+
+    const-string v5, "RAM"
+
+    goto :title_done
+
+    :cond_title_ru
+    const/4 v7, 0x0
 
     if-ne v4, v7, :cond_title_cpu
 
