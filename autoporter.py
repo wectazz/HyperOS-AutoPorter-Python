@@ -1339,6 +1339,69 @@ SELINUX_KEYSTORE_RULES = [
 ]
 
 
+def patch_hyper_os_system_lib(build_root: Path) -> None:
+    """Make HyperOS native code treat the build as non-global: rewrite
+    MiuiOsBuild_is_global_build in system_ext/lib64/libhyper_os_system_public.so
+    to `mov w0, #0; ret` (false). Symbol is located through ELF .dynsym (no
+    hardcoded offset, so it survives library version bumps). This is what
+    makes MiuiHome pick com.miui.personalassistant (App Vault) instead of
+    the global com.mi.globalminusscreen, and it also affects
+    MIUIGalleryGlobal (the only other importer). Idempotent; missing
+    file/symbol only warns."""
+    print("=== Patching libhyper_os_system_public (non-global build) ===")
+    path = build_root / "system_ext" / "lib64" / "libhyper_os_system_public.so"
+    if not path.is_file():
+        print("  [missing, skip] system_ext/lib64/libhyper_os_system_public.so\n")
+        return
+    data = bytearray(path.read_bytes())
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        print("  [warn] not a 64-bit LE ELF, skip\n")
+        return
+    e_shoff = struct.unpack_from("<Q", data, 0x28)[0]
+    e_shentsize = struct.unpack_from("<H", data, 0x3A)[0]
+    e_shnum = struct.unpack_from("<H", data, 0x3C)[0]
+    sections = [struct.unpack_from("<IIQQQQIIQQ", data,
+                                   e_shoff + i * e_shentsize)
+                for i in range(e_shnum)]
+    dynsym = next((sh for sh in sections if sh[1] == 11), None)  # SHT_DYNSYM
+    if dynsym is None:
+        print("  [warn] no .dynsym, skip\n")
+        return
+    if dynsym[6] >= len(sections):
+        print("  [warn] bad .dynsym string link, skip\n")
+        return
+    dynstr = sections[dynsym[6]]
+    sym_off, sym_size, sym_ent = dynsym[4], dynsym[5], dynsym[9] or 24
+    str_off = dynstr[4]
+    target = None
+    for off in range(sym_off, sym_off + sym_size, sym_ent):
+        st_name, _st_info, _st_other, _st_shndx, st_value, _st_size = (
+            struct.unpack_from("<IBBHQQ", data, off))
+        end = data.find(b"\x00", str_off + st_name)
+        name = bytes(data[str_off + st_name:end]).decode("utf-8", "replace")
+        if name == "MiuiOsBuild_is_global_build":
+            target = st_value
+            break
+    if target is None:
+        print("  [warn] MiuiOsBuild_is_global_build not found, skip\n")
+        return
+    text = next((sh for sh in sections if sh[1] == 1 and (sh[2] & 0x4)), None)
+    if text is None or not (text[3] <= target < text[3] + text[5]):
+        print("  [warn] symbol outside .text, skip\n")
+        return
+    off = text[4] + (target - text[3])
+    new = bytes.fromhex("00008052c0035fd61f2003d51f2003d5")
+    if data[off:off + 8] == new[:8]:
+        print("  already non-global, skip\n")
+        return
+    if data[off:off + 4] != bytes.fromhex("fd7bbfa9"):
+        print(f"  [warn] unexpected prologue {data[off:off+16].hex()}, skip\n")
+        return
+    data[off:off + 16] = new
+    path.write_bytes(data)
+    print(f"  {path.name}: MiuiOsBuild_is_global_build -> false\n")
+
+
 def apply_selinux_keystore_rules(build_root: Path, stock_root: Path) -> None:
     """Append the keystore allows to vendor/etc/selinux/vendor_sepolicy.cil
     (idempotent marker). Every referenced type must be declared by the
@@ -5890,6 +5953,7 @@ def main() -> None:
     # appended to the vendor policy .cil, both variants/modes. The port
     # already ships a stale precompiled cache, so init compiles from .cil.
     apply_selinux_keystore_rules(patch_root, UNPACKED_STOCK_DIR)
+    patch_hyper_os_system_lib(patch_root)
 
     # Steps 4e-4g: jar smali patching. --dsv gates ONLY the
     # signature-verification lists (DSV = disable signature verification);
