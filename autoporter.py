@@ -588,6 +588,75 @@ SETTINGS_ARRAY_PATCHES = (
     + [(["*.smali"], old, SETTINGS_ARRAY_GROUP2_NEW)
        for old in SETTINGS_ARRAY_GROUP2_OLD]
 )
+# About phone "device params" card grid (CPU / battery / camera / screen /
+# resolution / RAM). The grid is DeviceBasicInfoPresenter's RecyclerView
+# (@id/device_params, hidden in MiuiMyDeviceSettings.onCreateView) filled by
+# MiuiMyDeviceSettings$2 from DeviceParamsManager, which binds HTMLViewer's
+# MiuiDeviceInfoService (action com.android.settings.GET_DEVICE_INFO_SERVICE)
+# and that service reads /product/etc/device_info.json (shipped by the
+# about_phone_description overlay). onCreate creates the presenter only when
+# IS_INTERNATIONAL_BUILD == false (CN), so global builds never show the block.
+# Force the CN path everywhere: the check is a single sget-boolean p1, and the
+# following if-nez p1 falls through to the presenter creation. Match the
+# instruction only — apktool's baksmali renumbers labels (:cond_4, not
+# :cond_68), so including the branch label would miss on decode.
+SETTINGS_DEVICE_PARAMS_INTL_OLD = (
+    "    sget-boolean p1, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z")
+SETTINGS_DEVICE_PARAMS_INTL_NEW = "    const/4 p1, 0x0"
+# MIUI14 card style for the About-phone device params grid (icons + compact
+# 2-column layout). The presenter's (Context, boolean) constructor takes
+# isUseMiui15CardStyle; pass false. v2 is dead at this point (v0 stays 1 for
+# isReboot/owner-user), so the constructor gets a fresh zero.
+SETTINGS_DEVICE_PARAMS_MIUI14_OLD = (
+    "    invoke-direct {p1, v1, v0}, Lcom/android/settings/device/"
+    "DeviceBasicInfoPresenter;-><init>(Landroid/content/Context;Z)V")
+SETTINGS_DEVICE_PARAMS_MIUI14_NEW = (
+    "    const/4 v2, 0x0\n\n"
+    "    invoke-direct {p1, v1, v2}, Lcom/android/settings/device/"
+    "DeviceBasicInfoPresenter;-><init>(Landroid/content/Context;Z)V")
+# MIUI14 cards inflate base_card_item (HyperCellLayout template
+# "device_params_item_ternary"). That template is registered only by
+# MiuiMyDeviceDetailSettings.<clinit> (the "All specs" page), so the About
+# page crashes with "Can't find template" unless we register it first.
+# registerTemplate is a no-op when the key already exists (logs only).
+SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD = (
+    "    invoke-super {p0, p1}, Lcom/android/settings/dashboard/"
+    "DashboardFragment;->onCreate(Landroid/os/Bundle;)V")
+SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW = (
+    SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD + "\n\n"
+    "    const-string v0, \"device_params_item_ternary\"\n\n"
+    "    const-class v1, Lcom/android/settings/device/DeviceParamsItemTemplate;\n\n"
+    "    invoke-static {v0, v1}, Lmiuix/flexible/template/TemplateFactory;->"
+    "registerTemplate(Ljava/lang/String;Ljava/lang/Class;)V")
+# TemplateFactory.registerTemplate throws (IllegalArgumentException) when the
+# key is already registered; both the About page and MiuiMyDeviceDetailSettings
+# register "device_params_item_ternary", so neuter the duplicate branch (nop
+# instead of the throwing helper) — the first registration wins.
+SETTINGS_TEMPLATE_FACTORY_OLD = (
+    "    invoke-static {p1, p0, v0}, Landroidx/fragment/app/"
+    "Fragment$$ExternalSyntheticBUOutline0;->m(Ljava/lang/String;"
+    "Ljava/lang/Object;Ljava/lang/Object;)V")
+SETTINGS_TEMPLATE_FACTORY_NEW = "    nop"
+# MIUI14 INDEX_MAP (DeviceBasicInfoPresenter$1) reorder: Screen size (logical
+# 3) next to CPU, RAM (logical 5) next to Resolution. The 5->3 and 7->6 puts
+# share the same register line ({p0, v0, v2}); patch only the first one.
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_OLD = (
+    "    invoke-virtual {p0, v0, v2}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_NEW = (
+    "    invoke-virtual {p0, v0, v0}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD = (
+    "    invoke-virtual {p0, v2, v0}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_NEW = (
+    "    invoke-virtual {p0, v2, v2}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+# MIUI14 memory card: drop the global-only setType(1) so the RAM card stays
+# type 0 (half width) and fits next to Resolution. The comment is the
+# idempotency marker (smali ignores it).
+SETTINGS_DEVICE_PARAMS_MEMORY_MARKER = (
+    "    # MIUI14 compact grid: memory card stays type 0\n")
 # Settings.apk notification-icon-count extension (always, both modes):
 # notification_icon_counts entries 0,1,3 -> 0,1,3,3,3 and values 0,1,3 ->
 # 0,1,3,5,7, plus the setupShowNotificationIconCount()V smali widening
@@ -1108,12 +1177,12 @@ SYSTEM_PROP_APPEND = [
     "persist.sys.props.games=true",
     "debug.graphics.game_default_frame_rate.disabled=true",
     "debug.hwui.renderer=skiavk",
-    "persist.service.adb.enable=1",
-    "persist.service.debuggable=1",
-    "persist.sys.usb.config=adb",
-    "ro.adb.secure=0",
-    "ro.secure=0",
-    "ro.debuggable=1",
+#    "persist.service.adb.enable=1",
+#    "persist.service.debuggable=1",
+#    "persist.sys.usb.config=adb",
+#    "ro.adb.secure=0",
+#    "ro.secure=0",
+#    "ro.debuggable=1",
 ]
 # Computility levels (hos4/hos4_gl, either mode): written into
 # product/etc/build.prop. The keys already exist in stock build.prop, so
@@ -3340,6 +3409,43 @@ def patch_notification_count_smali(text: str) -> tuple:
         patched += 1
         i = j + 1
     return "".join(out), patched
+
+
+def patch_settings_index_map(text: str) -> tuple:
+    """MIUI14 INDEX_MAP reorder (Screen size before RAM). The 5->3 put and
+    the 7->6 put share the same register line, so replace only the first
+    occurrence of each target. Idempotent via the 3->5 line disappearing."""
+    if SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD not in text:
+        return text, 1  # already patched
+    if (SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_OLD not in text
+            or SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD not in text):
+        return text, 0
+    text = text.replace(SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_OLD,
+                        SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_NEW, 1)
+    text = text.replace(SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD,
+                        SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_NEW, 1)
+    return text, 1
+
+
+def patch_settings_memory_type(text: str) -> tuple:
+    """MIUI14 compact grid: drop the global-only setType(1) on the memory
+    card so it stays type 0 (half width). The marker comment makes re-runs
+    idempotent (smali ignores it)."""
+    if SETTINGS_DEVICE_PARAMS_MEMORY_MARKER in text:
+        return text, 1  # already patched
+    marker = ("invoke-virtual {p0, v6}, Lcom/android/settings/device/"
+              "DeviceBasicInfoPresenter;->setMemoryValueAndIndex("
+              "Lcom/android/settings/device/DeviceCardInfo;)V")
+    settype = ("    invoke-virtual {v6, v3}, Lcom/android/settings/device/"
+               "DeviceCardInfo;->setType(I)V\n")
+    idx = text.find(marker)
+    if idx < 0:
+        return text, 0
+    pos = text.find(settype, idx)
+    if pos < 0:
+        return text, 0
+    return (text[:pos] + SETTINGS_DEVICE_PARAMS_MEMORY_MARKER
+            + text[pos + len(settype):], 1)
 
 
 def inject_dsv_smali(dsv_key: str, dex_out_dirs: dict) -> dict:
@@ -5738,11 +5844,27 @@ def main() -> None:
         SETTINGS_APK, "settings",
         keyboard_replace_rules(["AvailableVirtualKeyboardFragment.smali"])
         + [(["InputMethodFunctionSelectUtils.smali"],
-            FUNCTION_SELECT_OLD, FUNCTION_SELECT_NEW)],
+            FUNCTION_SELECT_OLD, FUNCTION_SELECT_NEW)]
+        + [(["MiuiMyDeviceSettings.smali"],
+            SETTINGS_DEVICE_PARAMS_INTL_OLD,
+            SETTINGS_DEVICE_PARAMS_INTL_NEW)]
+        + [(["MiuiMyDeviceSettings.smali"],
+            SETTINGS_DEVICE_PARAMS_MIUI14_OLD,
+            SETTINGS_DEVICE_PARAMS_MIUI14_NEW)]
+        + [(["MiuiMyDeviceSettings.smali"],
+            SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD,
+            SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW)]
+        + [(["TemplateFactory.smali"],
+            SETTINGS_TEMPLATE_FACTORY_OLD,
+            SETTINGS_TEMPLATE_FACTORY_NEW)],
         patch_root,
         array_patches=SETTINGS_ARRAY_PATCHES,
         res_array_funcs=[("array*.xml", patch_notification_arrays)],
-        method_funcs=[(["*.smali"], patch_notification_count_smali)],
+        method_funcs=[(["*.smali"], patch_notification_count_smali),
+                      (["DeviceBasicInfoPresenter$1.smali"],
+                       patch_settings_index_map),
+                      (["DeviceBasicInfoPresenter.smali"],
+                       patch_settings_memory_type)],
         kashi=True,
         expected_new_entries=KASHI_EXPECTED_NEW_ENTRIES,
     )

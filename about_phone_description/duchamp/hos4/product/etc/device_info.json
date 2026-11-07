@@ -2,11 +2,12 @@
   {
     "hwc": "CN",
     "basic": {
-      "cpu": "Dimensity 8300 Ultra",
-      "battery": "5500mAh",
-      "camera": "64MP+8MP+2MP",
-      "screen": "6.67″ AMOLED",
-      "resolution": "2712×1220"
+      "CPU": "Dimensity 8300 Ultra",
+      "Battery capacity": "5500mAh",
+      "Camera specs": "64MP+8MP+2MP",
+      "Screen size": "6.67″ AMOLED",
+      "Resolution": "2712×1220",
+      "RAM": "12GB"
     },
     "camera": {
       "front_camera": "16MP",
@@ -16,11 +17,12 @@
   {
     "hwc": ["GL","IN"],
     "basic": {
-      "cpu": "Dimensity 8300 Ultra",
-      "battery": "5000mAh",
-      "camera": "64MP+8MP+2MP",
-      "screen": "6.67″ AMOLED",
-      "resolution": "2712×1220"
+      "CPU": "Dimensity 8300 Ultra",
+      "Battery capacity": "5000mAh",
+      "Camera specs": "64MP+8MP+2MP",
+      "Screen size": "6.67″ AMOLED",
+      "Resolution": "2712×1220",
+      "RAM": "12GB"
     },
     "camera": {
       "front_camera": "16MP",
