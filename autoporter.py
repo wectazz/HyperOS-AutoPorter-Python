@@ -1773,6 +1773,38 @@ def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
               f"fileencryptable x{encrypts}")
     print()
 
+
+def patch_vendor_media_profiles(stock_root: Path) -> None:
+    """Raise the 4K (3840x2160) h264/hevc encoder caps in
+    vendor/etc/media_profiles_V1_0.xml from 30 to 60 fps (duchamp-specific
+    file, both modes). Only blocks that declare the 4K max size are touched,
+    so the 640x480 h263/m4v caps keep 30. Missing file only warns;
+    idempotent (already-60 caps count as 0)."""
+    print("=== Patching vendor media profiles (4K60) ===")
+    path = stock_root / "vendor" / "etc" / "media_profiles_V1_0.xml"
+    if not path.is_file():
+        print("  [missing, skip] vendor/etc/media_profiles_V1_0.xml\n")
+        return
+    text = path.read_text()
+    patched = 0
+
+    def _repl(match):
+        nonlocal patched
+        block = match.group(0)
+        if (('name="h264"' in block or 'name="hevc"' in block)
+                and 'maxFrameWidth="3840"' in block
+                and 'maxFrameHeight="2160"' in block
+                and 'maxFrameRate="30"' in block):
+            patched += 1
+            return block.replace('maxFrameRate="30"', 'maxFrameRate="60"')
+        return block
+
+    new = re.sub(r"<VideoEncoderCap\b[^>]*/>", _repl, text)
+    if new != text:
+        path.write_text(new)
+    print(f"  {path.name}: raised {patched} 4K cap(s) to 60 fps\n")
+
+
 # Number of super.img.N chunks the install scripts expect (super.img.0 .. super.img.53)
 SUPER_SPLIT_PARTS = 54
 
@@ -5852,6 +5884,7 @@ def main() -> None:
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
     apply_vendor_build_prop(UNPACKED_STOCK_DIR)
+    patch_vendor_media_profiles(UNPACKED_STOCK_DIR)
 
     # Step 4d2: SELinux keystore rules (TrickyStore key attestation) —
     # appended to the vendor policy .cil, both variants/modes. The port
@@ -5937,8 +5970,13 @@ def main() -> None:
         shutil.copy2(stock_settings, BASE_DIR / "Settings_stock.apk")
         print("Stock Settings.apk copied for the debug artifact "
               "(Settings_stock.apk)\n")
-    patch_apk_apktool(
-        SETTINGS_APK, "settings",
+    # The device params grid already exists on CN (with the MIUI15 card
+    # style), so the MIUI14 restyle is global-only: presenter flag,
+    # INDEX_MAP order, half-width memory card and RU titles. The INTL gate,
+    # template registration and the TemplateFactory no-op are safe on both
+    # (on CN the gate is already false and the template may be registered
+    # twice, so the no-op still protects against the duplicate exception).
+    settings_replace = (
         keyboard_replace_rules(["AvailableVirtualKeyboardFragment.smali"])
         + [(["InputMethodFunctionSelectUtils.smali"],
             FUNCTION_SELECT_OLD, FUNCTION_SELECT_NEW)]
@@ -5946,24 +5984,34 @@ def main() -> None:
             SETTINGS_DEVICE_PARAMS_INTL_OLD,
             SETTINGS_DEVICE_PARAMS_INTL_NEW)]
         + [(["MiuiMyDeviceSettings.smali"],
-            SETTINGS_DEVICE_PARAMS_MIUI14_OLD,
-            SETTINGS_DEVICE_PARAMS_MIUI14_NEW)]
-        + [(["MiuiMyDeviceSettings.smali"],
             SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD,
             SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW)]
         + [(["TemplateFactory.smali"],
             SETTINGS_TEMPLATE_FACTORY_OLD,
-            SETTINGS_TEMPLATE_FACTORY_NEW)],
+            SETTINGS_TEMPLATE_FACTORY_NEW)]
+    )
+    settings_methods = [(["*.smali"], patch_notification_count_smali)]
+    if region != "CN":
+        settings_replace += [
+            (["MiuiMyDeviceSettings.smali"],
+             SETTINGS_DEVICE_PARAMS_MIUI14_OLD,
+             SETTINGS_DEVICE_PARAMS_MIUI14_NEW),
+        ]
+        settings_methods += [
+            (["DeviceBasicInfoPresenter$1.smali"],
+             patch_settings_index_map),
+            (["DeviceBasicInfoPresenter.smali"],
+             patch_settings_memory_type),
+            (["DeviceBasicInfoPresenter.smali"],
+             patch_settings_card_titles),
+        ]
+    patch_apk_apktool(
+        SETTINGS_APK, "settings",
+        settings_replace,
         patch_root,
         array_patches=SETTINGS_ARRAY_PATCHES,
         res_array_funcs=[("array*.xml", patch_notification_arrays)],
-        method_funcs=[(["*.smali"], patch_notification_count_smali),
-                      (["DeviceBasicInfoPresenter$1.smali"],
-                       patch_settings_index_map),
-                      (["DeviceBasicInfoPresenter.smali"],
-                       patch_settings_memory_type),
-                      (["DeviceBasicInfoPresenter.smali"],
-                       patch_settings_card_titles)],
+        method_funcs=settings_methods,
         res_replace_patches=SETTINGS_CAMERA_COLON_PATCHES,
         kashi=True,
         expected_new_entries=KASHI_EXPECTED_NEW_ENTRIES,
