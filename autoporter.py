@@ -657,6 +657,21 @@ SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_NEW = (
 # idempotency marker (smali ignores it).
 SETTINGS_DEVICE_PARAMS_MEMORY_MARKER = (
     "    # MIUI14 compact grid: memory card stays type 0\n")
+# Camera card labels: DeviceBasicInfoPresenter.updateCameraInfo does
+# String.format(camera_front, pixel).replace(" ", ""), so "Фронтальная %s"
+# renders as "Фронтальная16MP". Put a non-breaking space after the colon —
+# .replace(" ", "") only strips U+0020, so the label renders as
+# "Фронтальная: 16MP" (RU + default English; other locales keep stock labels).
+SETTINGS_CAMERA_COLON_PATCHES = [
+    ("strings.xml", '<string name="camera_front">Фронтальная %s</string>',
+     '<string name="camera_front">Фронтальная:\u00a0%s</string>'),
+    ("strings.xml", '<string name="camera_rear">Основная %s</string>',
+     '<string name="camera_rear">Основная:\u00a0%s</string>'),
+    ("strings.xml", '<string name="camera_front">Front %s</string>',
+     '<string name="camera_front">Front:\u00a0%s</string>'),
+    ("strings.xml", '<string name="camera_rear">Rear %s</string>',
+     '<string name="camera_rear">Rear:\u00a0%s</string>'),
+]
 # Settings.apk notification-icon-count extension (always, both modes):
 # notification_icon_counts entries 0,1,3 -> 0,1,3,3,3 and values 0,1,3 ->
 # 0,1,3,5,7, plus the setupShowNotificationIconCount()V smali widening
@@ -5865,6 +5880,7 @@ def main() -> None:
                        patch_settings_index_map),
                       (["DeviceBasicInfoPresenter.smali"],
                        patch_settings_memory_type)],
+        res_replace_patches=SETTINGS_CAMERA_COLON_PATCHES,
         kashi=True,
         expected_new_entries=KASHI_EXPECTED_NEW_ENTRIES,
     )
