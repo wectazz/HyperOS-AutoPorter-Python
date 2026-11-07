@@ -1339,6 +1339,66 @@ SELINUX_KEYSTORE_RULES = [
 ]
 
 
+def patch_miuihome_launcher_apk(apk: Path) -> None:
+    """Rewrite ro.product.mod_device -> ro.product.device (NUL padded,
+    same length) inside the stored libapp.so / libapp_launcher.so of
+    MiuiHome.apk, so the Dart side sees `duchamp` (ro.product.device)
+    instead of `duchamp_global` and selects com.miui.personalassistant.
+    In-place, CRC updated; the APK signing blocks stay stale (DSV).
+    Idempotent; missing entries/already patched only warn/skip."""
+    old = b"ro.product.mod_device"
+    new = b"ro.product.device" + b"\x00" * (len(old) - len(b"ro.product.device"))
+    names = ("lib/arm64-v8a/libapp.so", "lib/arm64-v8a/libapp_launcher.so")
+    with zipfile.ZipFile(apk) as z:
+        present = [n for n in names if n in z.namelist()]
+        data_map = {n: z.read(n) for n in present}
+    patched = 0
+    with open(apk, "r+b") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - 65557))
+        tail = f.read()
+        eocd_pos = tail.rfind(b"PK\x05\x06")
+        if eocd_pos < 0:
+            print("  [warn] MiuiHome.apk: no EOCD, skip")
+            return
+        eocd = tail[eocd_pos:]
+        cd_size, cd_off = struct.unpack("<II", eocd[12:20])
+        f.seek(cd_off)
+        cd = f.read(cd_size)
+        pos = 0
+        while pos < len(cd):
+            (_, _, _, _, _, _, _, _, _, _, nl, el, cl, _, _, _, lho) = (
+                struct.unpack("<IHHHHHHIIIHHHHHII", cd[pos:pos + 46]))
+            fname = cd[pos + 46:pos + 46 + nl].decode()
+            if fname in data_map:
+                f.seek(lho)
+                (_, _, _, comp, _, _, _, csize, _, lnl, lel) = (
+                    struct.unpack("<IHHHHHIIIHH", f.read(30)))
+                if comp != 0:
+                    print(f"  [warn] {fname}: compressed, skip")
+                else:
+                    data = data_map[fname]
+                    n = data.count(old)
+                    if n == 1:
+                        data = data.replace(old, new)
+                        crc = zlib.crc32(data) & 0xFFFFFFFF
+                        f.seek(lho + 30 + lnl + lel)
+                        f.write(data)
+                        f.seek(lho + 14)
+                        f.write(struct.pack("<I", crc))
+                        f.seek(cd_off + pos + 16)
+                        f.write(struct.pack("<I", crc))
+                        patched += 1
+                    elif n > 1:
+                        print(f"  [warn] {fname}: {n} occurrences, skip")
+            pos += 46 + nl + el + cl
+    if patched:
+        print(f"  MiuiHome.apk: localised {patched} lib(s) to ro.product.device")
+    elif present:
+        print("  MiuiHome.apk: already patched or no anchor")
+
+
 def patch_hyper_os_system_lib(build_root: Path) -> None:
     """Make HyperOS native code treat the build as non-global: rewrite
     MiuiOsBuild_is_global_build in system_ext/lib64/libhyper_os_system_public.so
@@ -1412,6 +1472,7 @@ def patch_hyper_os_system_lib(build_root: Path) -> None:
         shutil.copy2(path, staged)
         os.chmod(staged, 0o644)
         print(f"  staged {staged.relative_to(build_root)} for MiuiHome")
+        patch_miuihome_launcher_apk(home_apk)
     else:
         print("  [warn] product/priv-app/MiuiHome/MiuiHome.apk not found, skip staging")
     print()
