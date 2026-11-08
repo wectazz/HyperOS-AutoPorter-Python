@@ -812,6 +812,17 @@ SETTINGS_CAMERA_COLON_PATCHES = [
     ("strings.xml", '<string name="camera_rear">Rear %s</string>',
      '<string name="camera_rear">Rear:\u00a0%s</string>'),
 ]
+# miuix spring/over-scroll: SpringBackLayout/SpringRecyclerView disable the
+# spring when ro.product.mod_device contains "_global" (miuix.os.Build.
+# IS_INTERNATIONAL_BUILD). Force the non-global branch in their constructors
+# so global builds get the same smooth end-of-list spring as CN. Settings-only
+# (miuix classes live in the APK), no system prop change.
+SETTINGS_SPRING_LAYOUT_OLD = (
+    "    sget-boolean p1, Lmiuix/os/Build;->IS_INTERNATIONAL_BUILD:Z")
+SETTINGS_SPRING_LAYOUT_NEW = "    const/4 p1, 0x0"
+SETTINGS_SPRING_RECYCLER_OLD = (
+    "    sget-boolean p2, Lmiuix/os/Build;->IS_INTERNATIONAL_BUILD:Z")
+SETTINGS_SPRING_RECYCLER_NEW = "    const/4 p2, 0x0"
 # Settings.apk notification-icon-count extension (always, both modes):
 # notification_icon_counts entries 0,1,3 -> 0,1,3,3,3 and values 0,1,3 ->
 # 0,1,3,5,7, plus the setupShowNotificationIconCount()V smali widening
@@ -6060,6 +6071,12 @@ def main() -> None:
         + [(["TemplateFactory.smali"],
             SETTINGS_TEMPLATE_FACTORY_OLD,
             SETTINGS_TEMPLATE_FACTORY_NEW)]
+        + [(["SpringBackLayout.smali"],
+            SETTINGS_SPRING_LAYOUT_OLD,
+            SETTINGS_SPRING_LAYOUT_NEW)]
+        + [(["SpringRecyclerView.smali"],
+            SETTINGS_SPRING_RECYCLER_OLD,
+            SETTINGS_SPRING_RECYCLER_NEW)]
     )
     settings_methods = [(["*.smali"], patch_notification_count_smali)]
     if region != "CN":
