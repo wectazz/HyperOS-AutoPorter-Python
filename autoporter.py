@@ -1522,19 +1522,19 @@ MI_EXT_COPY_EXCLUDE = [
     "ro.miui.orange_pom.support_region",
     "ro.miui.customized_clientid",
     "support.parental.control",
-]
-# These moved keys also get the TengeOS version prefix when transferred.
-MI_EXT_PREFIX_COPY_KEYS = [
     "ro.product.build.version.incremental",
     "ro.build.version.incremental",
 ]
+# No keys currently get the TengeOS prefix on transfer: the two incremental
+# keys are excluded above (kept in mi_ext) instead of moved.
+MI_EXT_PREFIX_COPY_KEYS = []
 
 
 def apply_mi_ext_prop_transfer(build_root: Path) -> None:
     """Move every mi_ext/etc/build.prop key except MI_EXT_COPY_EXCLUDE into
-    product/etc/build.prop (upsert, idempotent). The two incremental keys
-    (MI_EXT_PREFIX_COPY_KEYS) get the TengeOS prefix on the way out. Missing
-    files only warn."""
+    product/etc/build.prop (upsert, idempotent). Keys in
+    MI_EXT_PREFIX_COPY_KEYS get the TengeOS prefix on the way out
+    (currently empty). Missing files only warn."""
     print("=== Moving mi_ext props into product ===")
     src_prop = build_root / MI_EXT_BUILD_PROP
     dest_prop = build_root / "product" / "etc" / "build.prop"
