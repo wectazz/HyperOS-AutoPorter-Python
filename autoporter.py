@@ -1406,6 +1406,10 @@ VENDOR_VULKAN_REPLACE = [
     ("ro.hwui.use_vulkan", "true"),
     ("debug.renderengine.backend", "skiavkthreaded"),
 ]
+# Forced/upserted vendor props (replace an existing line, else append at end).
+VENDOR_FORCED_PROPS = [
+    ("ro.arm64.memtag.bootctl_supported", "0"),
+]
 VENDOR_DROP_LINES = ["ro.control_privapp_permissions=enforce"]
 
 
@@ -1469,7 +1473,8 @@ def apply_vendor_build_prop(stock_root: Path) -> None:
         print("  [missing, skip] vendor/build.prop\n")
         return
     out: List[str] = []
-    forced, dropped = 0, 0
+    forced, dropped, added = 0, 0, 0
+    seen = set()
     for raw in prop.read_text().splitlines():
         s = raw.strip()
         if s in VENDOR_DROP_LINES:
@@ -1477,20 +1482,28 @@ def apply_vendor_build_prop(stock_root: Path) -> None:
             continue
         if s and not s.startswith("#") and "=" in s:
             key, _, value = (part.strip() for part in s.partition("="))
-            for fix_key, fix_value in VENDOR_VULKAN_REPLACE:
-                if key == fix_key and value != fix_value:
-                    indent = raw[:len(raw) - len(raw.lstrip())]
-                    out.append(f"{indent}{fix_key}={fix_value}")
-                    forced += 1
+            for fix_key, fix_value in VENDOR_VULKAN_REPLACE + VENDOR_FORCED_PROPS:
+                if key == fix_key:
+                    seen.add(fix_key)
+                    if value != fix_value:
+                        indent = raw[:len(raw) - len(raw.lstrip())]
+                        out.append(f"{indent}{fix_key}={fix_value}")
+                        forced += 1
+                    else:
+                        out.append(raw)
                     break
             else:
                 out.append(raw)
                 continue
             continue
         out.append(raw)
+    for fix_key, fix_value in VENDOR_FORCED_PROPS:
+        if fix_key not in seen:
+            out.append(f"{fix_key}={fix_value}")
+            added += 1
     prop.write_text("\n".join(out) + "\n")
-    print(f"  vendor/build.prop: forced {forced} value(s), "
-          f"dropped {dropped} line(s).\n")
+    print(f"  vendor/build.prop: forced {forced} value(s), added {added} "
+          f"prop(s), dropped {dropped} line(s).\n")
 
 
 # mi_ext -> product prop transfer: every key from mi_ext/etc/build.prop is
