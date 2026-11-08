@@ -4409,28 +4409,37 @@ def _rewrite_apk_zip(apk_path: Path, meta_files) -> None:
     os.replace(tmp, apk_path)
 
 
-def _original_signature_files(apk_path: Path):
-    """v1 signature blocks of an APK: MANIFEST.MF + every *.SF and
-    *.RSA/*.DSA/*.EC under META-INF. Empty when the APK has no v1
-    signature (v2+-only)."""
+def _is_signature_meta(name: str) -> bool:
+    """True for v1 JAR signature entries (manifest + .SF + block files)."""
+    up = name.upper()
+    return (up == "META-INF/MANIFEST.MF" or up.endswith(".SF")
+            or up.endswith((".RSA", ".DSA", ".EC")))
+
+
+def _apk_meta_entries(apk_path: Path):
+    """Every META-INF entry of an APK, signatures included, in zip order.
+    Non-signature entries (META-INF/services, *.kotlin_module, ...) are
+    load-bearing resources: dropping them breaks ServiceLoader lookups
+    (kotlinx-coroutines' MainDispatcherFactory is one — without it every
+    Dispatchers.Main user dies with "Module with the Main dispatcher is
+    missing", which is exactly what a rebuilt MIUISecurityCenterGlobal did
+    on device)."""
     try:
         with zipfile.ZipFile(apk_path) as z:
-            names = []
-            for n in z.namelist():
-                up = n.upper()
-                if not up.startswith("META-INF/"):
-                    continue
-                if (up == "META-INF/MANIFEST.MF" or up.endswith(".SF")
-                        or up.endswith((".RSA", ".DSA", ".EC"))):
-                    names.append(n)
-            has_block = any(n.upper().endswith((".RSA", ".DSA", ".EC"))
-                            for n in names)
-            has_sf = any(n.upper().endswith(".SF") for n in names)
-            if not (has_block and has_sf):
-                return []
-            return [(n, z.read(n)) for n in names]
+            return [(n, z.read(n)) for n in z.namelist()
+                    if n.upper().startswith("META-INF/")]
     except (zipfile.BadZipFile, OSError):
         return []
+
+
+def _original_meta_files(apk_path: Path):
+    """All META-INF entries of an APK (signature + resources) when it has a
+    v1 signature, else empty list (v2+-only APKs take the testkey path)."""
+    meta = _apk_meta_entries(apk_path)
+    names = [n.upper() for n, _ in meta]
+    has_block = any(n.endswith((".RSA", ".DSA", ".EC")) for n in names)
+    has_sf = any(n.endswith(".SF") for n in names)
+    return meta if (has_block and has_sf) else []
 
 
 def _find_eocd(data: bytes) -> int:
@@ -4472,16 +4481,18 @@ def _insert_signing_block(apk_path: Path, block: bytes) -> None:
 
 
 def reuse_original_signature(src_apk: Path, apk_path: Path) -> bool:
-    """Replace a rebuilt APK's META-INF with the ORIGINAL v1 signature
-    blocks from src_apk (stock certificate + stale digests) instead of
-    re-signing, and transplant the original APK Signing Block (stale v2/v3)
+    """Replace a rebuilt APK's META-INF with the ORIGINAL META-INF from
+    src_apk — the v1 signature blocks (stock certificate + stale digests)
+    AND every non-signature resource (META-INF/services, *.kotlin_module,
+    ...), which a rebuild must never drop (ServiceLoader lookups break
+    otherwise) — and transplant the original APK Signing Block (stale v2/v3)
     so viewers report V1+V2+V3 with "signature verification failed" rather
     than "unsigned" (MT-style). The stock signer is preserved (seinfo /
     sharedUserId behave as stock). StrictJarVerifier.verifyMessageDigest is
     neutered by DSV, so the mismatched v1 entry digests don't block loading.
     Returns False when the source has no v1 signature — the caller then
     falls back to the testkey."""
-    meta = _original_signature_files(src_apk)
+    meta = _original_meta_files(src_apk)
     if not meta:
         return False
     block = _read_signing_block(src_apk)
@@ -4497,11 +4508,13 @@ def reuse_original_signature(src_apk: Path, apk_path: Path) -> bool:
     return True
 
 
-def sign_apk_testkey(apk_path: Path) -> None:
+def sign_apk_testkey(apk_path: Path, src_apk: Path = None) -> None:
     """(Re-)sign an APK with the committed testkey (v1 JAR signing):
-    drops stale META-INF, writes MANIFEST.MF + CERT.SF + CERT.RSA, atomic
-    replace. Pure stdlib (hashlib + pow), so it runs on a bare JRE-only CI
-    as well. Missing key files raise (fail fast — unsigned is unparseable)."""
+    replaces the signature blocks with MANIFEST.MF + CERT.SF + CERT.RSA,
+    keeps every non-signature META-INF resource from src_apk (services,
+    kotlin_module, ...), atomic replace. Pure stdlib (hashlib + pow), so it
+    runs on a bare JRE-only CI as well. Missing key files raise (fail fast —
+    unsigned is unparseable)."""
     import base64
     import hashlib
     key_path = TESTKEY_DIR / "testkey.pk8"
@@ -4509,6 +4522,9 @@ def sign_apk_testkey(apk_path: Path) -> None:
     if not key_path.is_file() or not cert_path.is_file():
         raise RuntimeError(f"Missing testkey in {TESTKEY_DIR}: cannot sign {apk_path.name}")
     n, d, cert_der, issuer_raw, serial_raw = _load_testkey()
+    kept_meta = [(name, blob)
+                 for name, blob in _apk_meta_entries(src_apk or apk_path)
+                 if not _is_signature_meta(name)]
     with zipfile.ZipFile(apk_path) as zin:
         infos = [i for i in zin.infolist()
                  if not i.filename.upper().startswith("META-INF/")]
@@ -4553,7 +4569,7 @@ def sign_apk_testkey(apk_path: Path) -> None:
         _der_set(signer_info),
     )
     rsa_b = _der_seq(oid_signed_data, _der_tlv(0xA0, signed_data))
-    _rewrite_apk_zip(apk_path, [
+    _rewrite_apk_zip(apk_path, kept_meta + [
         ("META-INF/MANIFEST.MF", manifest_b),
         ("META-INF/CERT.SF", sf_b),
         ("META-INF/CERT.RSA", rsa_b),
@@ -4576,7 +4592,7 @@ def _apply_build_signature(src_apk: Path, tmp: Path) -> None:
     instead of "unsigned"), else re-sign with the testkey."""
     if REUSE_ORIGINAL_SIGNATURES and reuse_original_signature(src_apk, tmp):
         return
-    sign_apk_testkey(tmp)
+    sign_apk_testkey(tmp, src_apk)
 
 
 def ensure_apktool_framework() -> None:
