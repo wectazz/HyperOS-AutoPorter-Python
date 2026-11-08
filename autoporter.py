@@ -603,6 +603,60 @@ SETTINGS_ARRAY_PATCHES = (
 SETTINGS_DEVICE_PARAMS_INTL_OLD = (
     "    sget-boolean p1, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z")
 SETTINGS_DEVICE_PARAMS_INTL_NEW = "    const/4 p1, 0x0"
+# MIUI14 card style for the About-phone device params grid (icons + compact
+# 2-column layout). The presenter's (Context, boolean) constructor takes
+# isUseMiui15CardStyle; pass false. v2 is dead at this point (v0 stays 1 for
+# isReboot/owner-user), so the constructor gets a fresh zero.
+SETTINGS_DEVICE_PARAMS_MIUI14_OLD = (
+    "    invoke-direct {p1, v1, v0}, Lcom/android/settings/device/"
+    "DeviceBasicInfoPresenter;-><init>(Landroid/content/Context;Z)V")
+SETTINGS_DEVICE_PARAMS_MIUI14_NEW = (
+    "    const/4 v2, 0x0\n\n"
+    "    invoke-direct {p1, v1, v2}, Lcom/android/settings/device/"
+    "DeviceBasicInfoPresenter;-><init>(Landroid/content/Context;Z)V")
+# MIUI14 cards inflate base_card_item (HyperCellLayout template
+# "device_params_item_ternary"). That template is registered only by
+# MiuiMyDeviceDetailSettings.<clinit> (the "All specs" page), so the About
+# page crashes with "Can't find template" unless we register it first.
+# registerTemplate is a no-op when the key already exists (logs only).
+SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD = (
+    "    invoke-super {p0, p1}, Lcom/android/settings/dashboard/"
+    "DashboardFragment;->onCreate(Landroid/os/Bundle;)V")
+SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW = (
+    SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD + "\n\n"
+    "    const-string v0, \"device_params_item_ternary\"\n\n"
+    "    const-class v1, Lcom/android/settings/device/DeviceParamsItemTemplate;\n\n"
+    "    invoke-static {v0, v1}, Lmiuix/flexible/template/TemplateFactory;->"
+    "registerTemplate(Ljava/lang/String;Ljava/lang/Class;)V")
+# TemplateFactory.registerTemplate throws (IllegalArgumentException) when the
+# key is already registered; both the About page and MiuiMyDeviceDetailSettings
+# register "device_params_item_ternary", so neuter the duplicate branch (nop
+# instead of the throwing helper) — the first registration wins.
+SETTINGS_TEMPLATE_FACTORY_OLD = (
+    "    invoke-static {p1, p0, v0}, Landroidx/fragment/app/"
+    "Fragment$$ExternalSyntheticBUOutline0;->m(Ljava/lang/String;"
+    "Ljava/lang/Object;Ljava/lang/Object;)V")
+SETTINGS_TEMPLATE_FACTORY_NEW = "    nop"
+# MIUI14 INDEX_MAP (DeviceBasicInfoPresenter$1) reorder: Screen size (logical
+# 3) next to CPU, RAM (logical 5) next to Resolution. The 5->3 and 7->6 puts
+# share the same register line ({p0, v0, v2}); patch only the first one.
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_OLD = (
+    "    invoke-virtual {p0, v0, v2}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_NEW = (
+    "    invoke-virtual {p0, v0, v0}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD = (
+    "    invoke-virtual {p0, v2, v0}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_NEW = (
+    "    invoke-virtual {p0, v2, v2}, Ljava/util/HashMap;->put("
+    "Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+# MIUI14 memory card: drop the global-only setType(1) so the RAM card stays
+# type 0 (half width) and fits next to Resolution. The comment is the
+# idempotency marker (smali ignores it).
+SETTINGS_DEVICE_PARAMS_MEMORY_MARKER = (
+    "    # MIUI14 compact grid: memory card stays type 0\n")
 # Card titles come from HTMLViewer's BASIC_ITEMS (Title) and double as the
 # JSON keys for Summary, so translating them in the APK/JSON would break the
 # lookup. Localize at the display site instead: initData() builds one card per
@@ -769,15 +823,6 @@ SETTINGS_SPRING_LAYOUT_NEW = "    const/4 p1, 0x0"
 SETTINGS_SPRING_RECYCLER_OLD = (
     "    sget-boolean p2, Lmiuix/os/Build;->IS_INTERNATIONAL_BUILD:Z")
 SETTINGS_SPRING_RECYCLER_NEW = "    const/4 p2, 0x0"
-# MIUI15 device-params grid: SpaceItemDecoration adds a 10dp horizontal
-# offset to cards at even positions, but the full-span RAM card (position 2)
-# must not get one — it shifts RAM right by ~31px. Skip the horizontal part
-# (bottom/top margins stay) for position 2; labels are not matched because
-# apktool renumbers :cond_* on every decode.
-SETTINGS_DEVICE_PARAMS_RAM_MARKER = (
-    "    # RAM full-span: no horizontal offset\n")
-SETTINGS_DEVICE_PARAMS_RAM_ANCHOR = (
-    "    iput p4, p1, Landroid/graphics/Rect;->bottom:I\n")
 # Settings.apk notification-icon-count extension (always, both modes):
 # notification_icon_counts entries 0,1,3 -> 0,1,3,3,3 and values 0,1,3 ->
 # 0,1,3,5,7, plus the setupShowNotificationIconCount()V smali widening
@@ -3577,28 +3622,41 @@ def patch_notification_count_smali(text: str) -> tuple:
     return "".join(out), patched
 
 
-def patch_settings_ram_offset(text: str) -> tuple:
-    """MIUI15 device-params grid: skip only the horizontal offset for the
-    full-span RAM card at adapter position 2 (SpaceItemDecoration puts
-    left=10dp on even positions, shifting RAM ~31px). Bottom/top margins
-    stay; anchor is the bottom iput, no :cond_* labels are matched
-    (apktool renumbers them). Idempotent via the marker comment."""
-    if SETTINGS_DEVICE_PARAMS_RAM_MARKER in text:
-        return text, 1
-    if SETTINGS_DEVICE_PARAMS_RAM_ANCHOR not in text:
+def patch_settings_index_map(text: str) -> tuple:
+    """MIUI14 INDEX_MAP reorder (Screen size before RAM). The 5->3 put and
+    the 7->6 put share the same register line, so replace only the first
+    occurrence of each target. Idempotent via the 3->5 line disappearing."""
+    if SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD not in text:
+        return text, 1  # already patched
+    if (SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_OLD not in text
+            or SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD not in text):
         return text, 0
-    text = text.replace(
-        SETTINGS_DEVICE_PARAMS_RAM_ANCHOR,
-        SETTINGS_DEVICE_PARAMS_RAM_ANCHOR + "\n"
-        + SETTINGS_DEVICE_PARAMS_RAM_MARKER
-        + "    const/4 v0, 0x2\n\n"
-        + "    if-eq p2, v0, :aporter_skip_horizontal\n", 1)
-    end = text.rfind(".end method")
-    if end < 0:
-        return text, 0
-    text = (text[:end] + ":aporter_skip_horizontal\n    return-void\n"
-            + text[end:])
+    text = text.replace(SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_OLD,
+                        SETTINGS_DEVICE_PARAMS_INDEX_MAP_5_NEW, 1)
+    text = text.replace(SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_OLD,
+                        SETTINGS_DEVICE_PARAMS_INDEX_MAP_3_NEW, 1)
     return text, 1
+
+
+def patch_settings_memory_type(text: str) -> tuple:
+    """MIUI14 compact grid: drop the global-only setType(1) on the memory
+    card so it stays type 0 (half width). The marker comment makes re-runs
+    idempotent (smali ignores it)."""
+    if SETTINGS_DEVICE_PARAMS_MEMORY_MARKER in text:
+        return text, 1  # already patched
+    marker = ("invoke-virtual {p0, v6}, Lcom/android/settings/device/"
+              "DeviceBasicInfoPresenter;->setMemoryValueAndIndex("
+              "Lcom/android/settings/device/DeviceCardInfo;)V")
+    settype = ("    invoke-virtual {v6, v3}, Lcom/android/settings/device/"
+               "DeviceCardInfo;->setType(I)V\n")
+    idx = text.find(marker)
+    if idx < 0:
+        return text, 0
+    pos = text.find(settype, idx)
+    if pos < 0:
+        return text, 0
+    return (text[:pos] + SETTINGS_DEVICE_PARAMS_MEMORY_MARKER
+            + text[pos + len(settype):], 1)
 
 
 def patch_settings_card_titles(text: str) -> tuple:
@@ -6007,11 +6065,12 @@ def main() -> None:
         shutil.copy2(stock_settings, BASE_DIR / "Settings_stock.apk")
         print("Stock Settings.apk copied for the debug artifact "
               "(Settings_stock.apk)\n")
-    # MIUI15 card style (stock): only the INTL gate is forced so global
-    # builds show the device params grid. The locale-aware titles are
-    # global-only; CN keeps its stock look. No MIUI14 presenter flag,
-    # device_params_item_ternary registration, INDEX_MAP reorder or
-    # half-width memory card.
+    # The device params grid already exists on CN (with the MIUI15 card
+    # style), so the MIUI14 restyle is global-only: presenter flag,
+    # INDEX_MAP order, half-width memory card and RU titles. The INTL gate,
+    # template registration and the TemplateFactory no-op are safe on both
+    # (on CN the gate is already false and the template may be registered
+    # twice, so the no-op still protects against the duplicate exception).
     settings_replace = (
         keyboard_replace_rules(["AvailableVirtualKeyboardFragment.smali"])
         + [(["InputMethodFunctionSelectUtils.smali"],
@@ -6019,6 +6078,12 @@ def main() -> None:
         + [(["MiuiMyDeviceSettings.smali"],
             SETTINGS_DEVICE_PARAMS_INTL_OLD,
             SETTINGS_DEVICE_PARAMS_INTL_NEW)]
+        + [(["MiuiMyDeviceSettings.smali"],
+            SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD,
+            SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW)]
+        + [(["TemplateFactory.smali"],
+            SETTINGS_TEMPLATE_FACTORY_OLD,
+            SETTINGS_TEMPLATE_FACTORY_NEW)]
         + [(["SpringBackLayout.smali"],
             SETTINGS_SPRING_LAYOUT_OLD,
             SETTINGS_SPRING_LAYOUT_NEW)]
@@ -6026,13 +6091,18 @@ def main() -> None:
             SETTINGS_SPRING_RECYCLER_OLD,
             SETTINGS_SPRING_RECYCLER_NEW)]
     )
-    settings_methods = [
-        (["*.smali"], patch_notification_count_smali),
-        (["DeviceBasicInfoPresenter$SpaceItemDecoration.smali"],
-         patch_settings_ram_offset),
-    ]
+    settings_methods = [(["*.smali"], patch_notification_count_smali)]
     if region != "CN":
+        settings_replace += [
+            (["MiuiMyDeviceSettings.smali"],
+             SETTINGS_DEVICE_PARAMS_MIUI14_OLD,
+             SETTINGS_DEVICE_PARAMS_MIUI14_NEW),
+        ]
         settings_methods += [
+            (["DeviceBasicInfoPresenter$1.smali"],
+             patch_settings_index_map),
+            (["DeviceBasicInfoPresenter.smali"],
+             patch_settings_memory_type),
             (["DeviceBasicInfoPresenter.smali"],
              patch_settings_card_titles),
         ]
