@@ -1840,17 +1840,27 @@ FSTAB_STRIP_OPTIONS = [
     "avb=vbmeta,",
     "avb,",
     ",avb_keys=/avb/q-gsi.avbpubkey:/avb/r-gsi.avbpubkey:/avb/s-gsi.avbpubkey",
-    "fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized,keydirectory=/metadata/vold/metadata_encryption,",
 ]
+
+# Stock /data metadata-encryption option (duchamp vendor fstab). Removed ONLY
+# with --decrypt-data yes; with no the /data line must stay byte-identical so
+# the data partition keeps its stock encryption. It used to sit in
+# FSTAB_STRIP_OPTIONS, so it was stripped unconditionally — /data was silently
+# decrypted even with the flag off (ro.crypto.state=unsupported on device) and
+# the old fileencryption->fileencryptable rename never matched anything because
+# the string was already gone.
+FSTAB_FILEENCRYPTION_OPTION = (
+    "fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized,"
+    "keydirectory=/metadata/vold/metadata_encryption,")
 
 
 def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
     """Patch vendor/etc/fstab.* in the unpacked stock tree, porting the DNA
-    rw/decrypt plugin methods: strip AVB options, drop overlay lines (rw),
-    drop /mi_ext mount lines (mi_ext is not packed into super, so nothing
-    must try to mount it), and with decrypt_data also rename fileencryption
-    -> fileencryptable (decrypted /data). AVB strips run before the rename,
-    otherwise the renamed option would no longer match."""
+    rw plugin methods: strip AVB options, drop overlay lines (rw), drop
+    /mi_ext mount lines (mi_ext is not packed into super, so nothing must try
+    to mount it). --decrypt-data yes additionally removes the /data
+    metadata-encryption option (FSTAB_FILEENCRYPTION_OPTION) so userdata
+    mounts unencrypted; with no the /data line stays stock."""
     fstabs = sorted((stock_root / "vendor" / "etc").glob("fstab.*"))
     if not fstabs:
         print("  [warn] no vendor/etc/fstab.* found, skip fstab patching\n")
@@ -1872,14 +1882,14 @@ def patch_vendor_fstab(stock_root: Path, decrypt_data: bool) -> None:
                 if opt in new:
                     new = new.replace(opt, "")
                     stripped += 1
-            if decrypt_data and "fileencryption" in new:
-                new = new.replace("fileencryption", "fileencryptable")
+            if decrypt_data and FSTAB_FILEENCRYPTION_OPTION in new:
+                new = new.replace(FSTAB_FILEENCRYPTION_OPTION, "")
                 encrypts += 1
             out.append(new)
         fst.write_text("".join(out))
         print(f"  {fst.name}: stripped {stripped} option(s), dropped {overlays} "
               f"overlay line(s), dropped {miext} mi_ext mount line(s), "
-              f"fileencryptable x{encrypts}")
+              f"fileencryption removed x{encrypts}")
     print()
 
 
@@ -5786,7 +5796,7 @@ def main() -> None:
         "--decrypt-data",
         choices=["yes", "no"],
         default="no",
-        help="Rename fileencryption -> fileencryptable in vendor fstab "
+        help="Remove the /data fileencryption option in vendor fstab "
              "(decrypted /data, format data after flash) (default: no)",
     )
     parser.add_argument(
@@ -5994,8 +6004,8 @@ def main() -> None:
     # Step 4d: Debloat the unpacked trees + patch vendor fstab (AVB off, rw).
     # Port mode: DEBLOAT onto the port tree, STOCK_DEBLOAT onto the stock
     # tree. Mod mode: both lists onto the single stock tree. Fstab patching
-    # is not debloat-gated (functional, not deletions); only the
-    # fileencryption rename follows --decrypt-data. Runs before the rebuild.
+    # is not debloat-gated (functional, not deletions); only the /data
+    # fileencryption removal follows --decrypt-data. Runs before the rebuild.
     debloat_version = args.hyper_version if args.debloat == "auto" else args.debloat
     if debloat_version == "hos4_gl":
         debloat_version = "hos4"  # gl set has no own list; region refines below

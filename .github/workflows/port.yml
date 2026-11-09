@@ -62,7 +62,7 @@ on:
           - "yes"
           - "no"
       decrypt_data:
-        description: 'Decrypt /data (fileencryption -> fileencryptable in fstab)'
+        description: 'Decrypt /data (remove the fileencryption option in vendor fstab)'
         required: true
         default: 'yes'
         type: choice
