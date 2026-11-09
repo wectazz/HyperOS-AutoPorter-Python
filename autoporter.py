@@ -499,20 +499,6 @@ POWERKEEPER_METHOD_PATCHES = [
      ["setScreenEffect(Ljava/lang/String;II)V",
       "setScreenEffectInternal(ILjava/lang/String;)V"], "keep", None),
 ]
-# MIUISecurityCenterGlobal.apk (always, both regions/modes): treat the build
-# as international in the network assistant, and drop the 10-second wait in
-# the intercept-permission prompt (0xa -> 0).
-SECURITY_CENTER_APK = (
-    "product/priv-app/MIUISecurityCenterGlobal/"
-    "MIUISecurityCenterGlobal.apk")
-SECURITY_CENTER_REPLACE_PATCHES = [
-    (["DeviceUtil.smali"],
-     "    sget-boolean v0, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z",
-     "    const/4 v0, 0x1"),
-    (["InterceptPermissionFragment.smali"],
-     "    const/16 v0, 0xa",
-     "    const/4 v0, 0x0"),
-]
 # MIUI dialer (global firmwares only — CN ships it already; gated by
 # --dialer). EU firmwares carry no dialer in mi_ext, so the committed
 # dialer_gl/ set is used; other global regions move the apps from the
@@ -6158,10 +6144,9 @@ def main() -> None:
         expected_new_entries=KASHI_EXPECTED_NEW_ENTRIES,
     )
 
-    # Step 4g2c: Smali-patch Provision.apk (Poco gate -> false),
-    # PowerKeeper.apk (thermal/display neutering) and
-    # MIUISecurityCenterGlobal.apk (international flag + 10s prompt wait).
-    # Always, both modes; each call drops the stale oat/ next to the APK.
+    # Step 4g2c: Smali-patch Provision.apk (Poco gate -> false) and
+    # PowerKeeper.apk (thermal/display neutering). Always, both modes;
+    # each call drops the stale oat/ next to the APK.
     patch_apk_smali(
         PROVISION_APK, "provision",
         [],
@@ -6173,11 +6158,6 @@ def main() -> None:
         [],
         patch_root,
         method_body_patches=POWERKEEPER_METHOD_PATCHES,
-    )
-    patch_apk_smali(
-        SECURITY_CENTER_APK, "securitycenter",
-        SECURITY_CENTER_REPLACE_PATCHES,
-        patch_root,
     )
 
     # Step 4g3: DevicesOverlay.apk resource patch (status_bar_padding_top
