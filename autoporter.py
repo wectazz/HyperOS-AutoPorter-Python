@@ -505,6 +505,31 @@ PROVISION_METHOD_PATCHES = [
     (["provision/Utils.smali"], ["isPocoDevice("], "keep",
      ["const/4 v0, 0x0", "return v0"]),
 ]
+
+
+def patch_provision_gms_cn(text: str) -> tuple:
+    """Provision/Utils.setGmsAppEnabledStateForCn disables the whole GMS_APPS
+    list (Play Store, GMS, GSF, ConfigUpdater, ...) on CN first boot: it is
+    called with COMPONENT_ENABLED_STATE_DISABLED and runs unconditionally when
+    IS_INTERNATIONAL_BUILD is false. Flip that read to IS_ALPHA_BUILD inside
+    this method only (release builds -> false -> early return), so CN keeps
+    Google enabled. Scoped by the method header, so the other
+    IS_INTERNATIONAL_BUILD reads in Utils.smali stay untouched. Returns
+    (new_text, patched_methods); idempotent."""
+    marker = ".method public static setGmsAppEnabledStateForCn("
+    start = text.find(marker)
+    if start < 0:
+        return text, 0
+    end = text.find(".end method", start)
+    if end < 0:
+        return text, 0
+    block = text[start:end]
+    old = "    sget-boolean v0, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z"
+    new = "    sget-boolean v0, Lmiui/os/Build;->IS_ALPHA_BUILD:Z"
+    if old not in block:
+        return text, 0
+    block = block.replace(old, new, 1)
+    return text[:start] + block + text[end:], 1
 # PowerKeeper.apk thermal/display neutering (always, both modes):
 # getDisplayCtrlCode()I -> return 0; setScreenEffect(+Internal) -> void.
 POWERKEEPER_APK = "system_ext/app/PowerKeeper/PowerKeeper.apk"
@@ -1840,6 +1865,7 @@ DEBLOAT_HOS4_GLOBAL = [
     "product/priv-app/MIUIEsimLPA",
     "product/priv-app/MIUIMusicGlobal",
     "product/priv-app/MIUIVideoPlayer",
+    "product/priv-app/GooglePlayServicesUpdater",
     "product/priv-app/PersonalSafety",
     "product/priv-app/Wellbeing",
     "product/priv-app/facebook-installer",
@@ -6298,6 +6324,7 @@ def main() -> None:
         [],
         patch_root,
         method_body_patches=PROVISION_METHOD_PATCHES,
+        method_funcs=[(["Utils.smali"], patch_provision_gms_cn)],
     )
     patch_apk_smali(
         POWERKEEPER_APK, "powerkeeper",
