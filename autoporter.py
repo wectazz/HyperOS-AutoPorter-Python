@@ -3836,6 +3836,27 @@ def patch_notification_count_smali(text: str) -> tuple:
     return "".join(out), patched
 
 
+def patch_miui_settings_google_header(text: str) -> tuple:
+    """Always call AddGoogleSettingsHeaders() (the Settings "Google" tab
+    entries): the call is gated by IS_GLOBAL_BUILD, so CN hides the tab.
+    Insert `const/4 v0, 0x1` right after that sget, scoped to the call's
+    nearest preceding sget (the file can grow other IS_GLOBAL_BUILD reads).
+    Idempotent: skips when the const already follows the sget. Returns
+    (new_text, patched_methods)."""
+    marker = "Lcom/android/settings/MiuiSettings;->AddGoogleSettingsHeader"
+    idx = text.find(marker)
+    if idx < 0:
+        return text, 0
+    sget = "    sget-boolean v0, Lmiui/os/Build;->IS_GLOBAL_BUILD:Z"
+    pos = text.rfind(sget, 0, idx)
+    if pos < 0:
+        return text, 0
+    end = pos + len(sget)
+    if "const/4 v0, 0x1" in text[end:end + 40]:
+        return text, 0
+    return text[:end] + "\n\n    const/4 v0, 0x1" + text[end:], 1
+
+
 def patch_settings_index_map(text: str) -> tuple:
     """MIUI14 INDEX_MAP reorder (Screen size before RAM). The 5->3 put and
     the 7->6 put share the same register line, so replace only the first
@@ -6335,7 +6356,10 @@ def main() -> None:
             SETTINGS_SPRING_RECYCLER_OLD,
             SETTINGS_SPRING_RECYCLER_NEW)]
     )
-    settings_methods = [(["*.smali"], patch_notification_count_smali)]
+    settings_methods = [
+        (["*.smali"], patch_notification_count_smali),
+        (["MiuiSettings.smali"], patch_miui_settings_google_header),
+    ]
     if region != "CN":
         settings_replace += [
             (["MiuiMyDeviceSettings.smali"],
