@@ -1791,7 +1791,7 @@ DEBLOAT_HOS4: List[str] = [
     "product/priv-app/facebook-installer",
     "product/priv-app/facebook-services",
     "product/priv-app/VoiceAssistAndroidT",
-    "product/priv-app/PersonalAssistant",
+    "product/priv-app/MIUIPersonalAssistantPhoneOS4",
     # system_ext/app
     "system_ext/app/DebugLoggerUI",
     "system_ext/app/digitalkey",
