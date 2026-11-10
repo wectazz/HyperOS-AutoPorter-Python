@@ -122,7 +122,7 @@ STOCK_URL_DUCHAMP = (
 )
 PORT_URL = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
-    "OS4.0.0.11.XPTMIXM/chagall_global-ota_full-OS4.0.0.11.XPTMIXM-user-17.0-cfe6c12441.zip"
+    "OS4.0.3.0.XPTCNXM/chagall-ota_full-OS4.0.3.0.XPTCNXM-user-17.0-8e5b90cb5d.zip"
 )
 
 HOS3_MOD_URL = (
