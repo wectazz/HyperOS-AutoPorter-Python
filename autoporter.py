@@ -362,6 +362,22 @@ MI_EXT_PRODUCT_MOVES = [
     ("mi_ext/product/framework/miui-uninstall-empty.jar",
      "product/framework/miui-uninstall-empty.jar", None),
 ]
+# Unconditional (CN AND global) mi_ext/product file moves. CN keeps these in
+# mi_ext only and mi_ext is not packed into super, so without the move they
+# vanish; global gets the same files through its own dir moves, but running
+# this first is harmless (the remaining files stay for the global dir merge).
+MI_EXT_PRODUCT_ALWAYS_MOVES = [
+    ("mi_ext/product/etc/ecc_list.xml",
+     "product/etc/ecc_list.xml"),
+    ("mi_ext/product/etc/vendor_miui.xml",
+     "product/etc/vendor_miui.xml"),
+    ("mi_ext/product/etc/permissions/privapp-permissions-product-miext.xml",
+     "product/etc/permissions/privapp-permissions-product-miext.xml"),
+    ("mi_ext/product/etc/permissions/signature-permissions-mx_virtualsim_v2.xml",
+     "product/etc/permissions/signature-permissions-mx_virtualsim_v2.xml"),
+    ("mi_ext/product/etc/permissions/system_launcher_private_permission.xml",
+     "product/etc/permissions/system_launcher_private_permission.xml"),
+]
 # Nested dirs dropped from the mi_ext tree (never baked into mi_ext.img).
 MI_EXT_DROP_DIRS = ["mi_ext/system", "mi_ext/system_ext", "mi_ext/product/app"]
 # GMS permission XML removed from product on CN firmwares only (both modes,
@@ -381,7 +397,7 @@ MI_EXT_GLOBAL_DIR_MOVES = [
       "CrossDeviceServices", "MIUIGlobalMinusScreenWidget",
       "PrivateComputeServices_arm64", "SearchSelector"]),
     ("mi_ext/product/etc", "product/etc",
-     ["ecc_list.xml", "vendor_miui.xml", "miext_removable_apk_info.xml",
+     ["miext_removable_apk_info.xml",
       "default-permissions", "permissions", "sysconfig", "cust_features"]),
     ("mi_ext/product", "product",
      ["framework", "opcust", "overlay"]),
@@ -2796,6 +2812,14 @@ def apply_mi_ext_tweaks(build_root: Path, hyper_version: str,
             move_file_preserve(src, dst)
             print(f"  moved {src_rel} -> {dst_rel}")
             # drop emptied parents up to mi_ext/product (best effort)
+            _drop_emptied_parents(src.parent, build_root / "mi_ext" / "product")
+        for src_rel, dst_rel in MI_EXT_PRODUCT_ALWAYS_MOVES:
+            src, dst = build_root / src_rel, build_root / dst_rel
+            if not (src.is_file() or src.is_symlink()):
+                print(f"  [missing, skip] {src_rel}")
+                continue
+            move_file_preserve(src, dst)
+            print(f"  moved {src_rel} -> {dst_rel}")
             _drop_emptied_parents(src.parent, build_root / "mi_ext" / "product")
         if region != "CN":
             apply_mi_ext_global_moves(build_root)
