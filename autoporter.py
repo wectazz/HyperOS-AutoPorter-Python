@@ -1344,6 +1344,41 @@ INIT_RC_APPEND = [
     "    disabled",
 ]
 INIT_RC_GUARD = "service animationfix"
+# Power-button assistant seeding (same init.rc, independent guard): on the
+# first boot after a data wipe the MIUI shortcut settings are unset (null),
+# so long-press power does nothing even though the shortcut JSON lists
+# launch_google_search first. The script sets them only when unset, so a
+# user choice is never overwritten; it also points the assistant at GSA
+# (Gemini is delivered by the Google app when the Gemini app is installed).
+INIT_RC_GEMINI_APPEND = [
+    "on property:sys.boot_completed=1",
+    "   start geminifix",
+    "",
+    "service geminifix /system/bin/sh /system/bin/geminifix.sh",
+    "    seclabel u:r:shell:s0",
+    "    user root",
+    "    oneshot",
+    "    disabled",
+]
+INIT_RC_GEMINI_GUARD = "service geminifix"
+GEMINI_FIX_SCRIPT_REL = "system/system/bin/geminifix.sh"
+GEMINI_FIX_SCRIPT = """#!/system/bin/sh
+# Seed the long-press-power assistant only when unset (null/empty): the
+# MIUI settings have no default seed on a fresh data partition, so without
+# this the key is null and the gesture does nothing. Order matters:
+# long_press_power_launch_xiaoai=0 first (on CN a value of 1 makes the
+# settings observer rewrite the key to launch_voice_assistant), then the key.
+v=$(settings get system long_press_power_key)
+if [ -z "$v" ] || [ "$v" = "null" ]; then
+    settings put system long_press_power_launch_xiaoai 0
+    settings put system long_press_power_key launch_google_search
+fi
+a=$(settings get secure assistant)
+if [ -z "$a" ] || [ "$a" = "null" ]; then
+    settings put secure assistant com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService
+    settings put secure voice_interaction_service com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService
+fi
+"""
 # About-phone overlay (step 4c3b, both modes, on patch_root): committed
 # about_phone_description/duchamp/<hos3|hos4>/ files copied into the build
 # tree for the selected --hyper-version.
@@ -2929,14 +2964,27 @@ def apply_init_rc_tweak(build_root: Path) -> None:
         print(f"  [missing, skip] {INIT_RC}\n")
         return
     text = rc.read_text()
-    if INIT_RC_GUARD in text:
+    changed = False
+    if INIT_RC_GUARD not in text:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join(INIT_RC_APPEND) + "\n"
+        changed = True
+    if INIT_RC_GEMINI_GUARD not in text:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
+        changed = True
+    if not changed:
         print(f"  already present, skip {INIT_RC}\n")
         return
-    if text and not text.endswith("\n"):
-        text += "\n"
-    text += "\n".join(INIT_RC_APPEND) + "\n"
     rc.write_text(text)
-    print(f"  appended animationfix block to {INIT_RC}\n")
+    script = build_root / GEMINI_FIX_SCRIPT_REL
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(GEMINI_FIX_SCRIPT)
+    script.chmod(0o755)
+    print(f"  appended animationfix/geminifix blocks to {INIT_RC}")
+    print(f"  wrote {GEMINI_FIX_SCRIPT_REL} (0755)\n")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
