@@ -580,19 +580,6 @@ MIUIHOME_RES_PATCHES = [
      r'(regionType=["\'])global(["\'])',
      r"\g<1>all\g<2>"),
 ]
-# SecurityCoreAdd.apk (product/app): the gesture-function pages read
-# res/xml/shortcut_function_map.xml, where launch_google_search is gated
-# regionType="global" and launch_voice_assistant "cn"; on CN the map drops
-# Google so the gesture settings never list it. Flip the Google entry to
-# "all" (XiaoAI stays cn-only). Always, both modes; missing APK/no match
-# only warns.
-SECURITY_CORE_ADD_APK = "product/app/SecurityCoreAdd/SecurityCoreAdd.apk"
-SECURITY_CORE_ADD_RES_PATCHES = [
-    ("shortcut_function_map.xml",
-     r'(<FunctionInfo\s+function="launch_google_search"\s+regionType=")'
-     r'global(")',
-     r"\g<1>all\g<2>"),
-]
 # Settings.apk .array-data replacements (step 4g2, always, both modes).
 # Old blocks are matched by their 16 float values (as ints — robust to the
 # декомпилер's :array_NNN label numbering, which shifts between builds),
@@ -3849,27 +3836,6 @@ def patch_notification_count_smali(text: str) -> tuple:
     return "".join(out), patched
 
 
-def patch_miui_shortcut_key_global(text: str) -> tuple:
-    """Force the global branch in MiuiShortcut$Key, which builds the gesture
-    function list: getActions (launch_google_search vs launch_voice_assistant
-    + launch_ai_shortcut), the display-title list and the hidden-preference
-    list all gate on IS_GLOBAL_BUILD, so on CN the Google entry is never
-    added / is hidden. Replace each read with a constant true (const/4 for
-    low v registers, const/16 for parameter registers — const/4 cannot
-    encode p aliases). Idempotent: the sget is gone after the first run.
-    Returns (new_text, patched_reads)."""
-    pat = re.compile(
-        r"    sget-boolean (v\d+|p\d+), Lmiui/os/Build;->IS_GLOBAL_BUILD:Z")
-
-    def repl(match):
-        reg = match.group(1)
-        if reg.startswith("v") and int(reg[1:]) < 16:
-            return f"    const/4 {reg}, 0x1"
-        return f"    const/16 {reg}, 0x1"
-
-    return pat.subn(repl, text)
-
-
 def patch_miui_settings_google_header(text: str) -> tuple:
     """Always call AddGoogleSettingsHeaders() (the Settings "Google" tab
     entries): the call is gated by IS_GLOBAL_BUILD, so CN hides the tab.
@@ -6393,7 +6359,6 @@ def main() -> None:
     settings_methods = [
         (["*.smali"], patch_notification_count_smali),
         (["MiuiSettings.smali"], patch_miui_settings_google_header),
-        (["MiuiShortcut$Key.smali"], patch_miui_shortcut_key_global),
     ]
     if region != "CN":
         settings_replace += [
@@ -6456,16 +6421,6 @@ def main() -> None:
     patch_apk_res(
         MIUIHOME_APK, "miuihome",
         MIUIHOME_RES_PATCHES,
-        patch_root,
-    )
-
-    # Step 4g3c: SecurityCoreAdd.apk res patch — the gesture-function map
-    # (res/xml/shortcut_function_map.xml) marks launch_google_search
-    # regionType="global", so CN drops it and the gesture settings never
-    # list Google. Flip it to "all". Always, both modes.
-    patch_apk_res(
-        SECURITY_CORE_ADD_APK, "securitycoreadd",
-        SECURITY_CORE_ADD_RES_PATCHES,
         patch_root,
     )
 
