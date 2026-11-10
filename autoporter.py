@@ -603,6 +603,23 @@ SETTINGS_ARRAY_PATCHES = (
 SETTINGS_DEVICE_PARAMS_INTL_OLD = (
     "    sget-boolean p1, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z")
 SETTINGS_DEVICE_PARAMS_INTL_NEW = "    const/4 p1, 0x0"
+# "Подробная информация и характеристики" (MiuiMyDeviceDetailSettings): on
+# global initGridView() takes the "basic" branch (memory card + async CPU
+# card only — the page shows just RAM and CPU); force the CN branch so the
+# page renders the same full device params grid as the About page —
+# cards_data arrives from the About presenter when present, else the
+# DeviceParamsManager callback fills the grid. The file has two
+# `sget-boolean v0, IS_INTERNATIONAL_BUILD` lines; only the initGridView one
+# is followed by `if-eqz v0,` (initHardWareVersion's is followed by
+# `const/4 v1, 0x1`), so the rule anchors on that pair and keeps the branch
+# label untouched (labels renumber between decodes). On CN this is a
+# behavioral no-op (the check was already false there).
+SETTINGS_ALL_SPECS_INTL_OLD = (
+    "    sget-boolean v0, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n\n"
+    "    if-eqz v0,")
+SETTINGS_ALL_SPECS_INTL_NEW = (
+    "    const/4 v0, 0x0\n\n"
+    "    if-eqz v0,")
 # MIUI14 card style for the About-phone device params grid (icons + compact
 # 2-column layout). The presenter's (Context, boolean) constructor takes
 # isUseMiui15CardStyle; pass false. v2 is dead at this point (v0 stays 1 for
@@ -6104,6 +6121,9 @@ def main() -> None:
         + [(["MiuiMyDeviceSettings.smali"],
             SETTINGS_DEVICE_PARAMS_INTL_OLD,
             SETTINGS_DEVICE_PARAMS_INTL_NEW)]
+        + [(["MiuiMyDeviceDetailSettings.smali"],
+            SETTINGS_ALL_SPECS_INTL_OLD,
+            SETTINGS_ALL_SPECS_INTL_NEW)]
         + [(["MiuiMyDeviceSettings.smali"],
             SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD,
             SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW)]
