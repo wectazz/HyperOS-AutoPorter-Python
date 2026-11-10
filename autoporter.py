@@ -3836,6 +3836,27 @@ def patch_notification_count_smali(text: str) -> tuple:
     return "".join(out), patched
 
 
+def patch_miui_shortcut_key_global(text: str) -> tuple:
+    """Force the global branch in MiuiShortcut$Key, which builds the gesture
+    function list: getActions (launch_google_search vs launch_voice_assistant
+    + launch_ai_shortcut), the display-title list and the hidden-preference
+    list all gate on IS_GLOBAL_BUILD, so on CN the Google entry is never
+    added / is hidden. Replace each read with a constant true (const/4 for
+    low v registers, const/16 for parameter registers — const/4 cannot
+    encode p aliases). Idempotent: the sget is gone after the first run.
+    Returns (new_text, patched_reads)."""
+    pat = re.compile(
+        r"    sget-boolean (v\d+|p\d+), Lmiui/os/Build;->IS_GLOBAL_BUILD:Z")
+
+    def repl(match):
+        reg = match.group(1)
+        if reg.startswith("v") and int(reg[1:]) < 16:
+            return f"    const/4 {reg}, 0x1"
+        return f"    const/16 {reg}, 0x1"
+
+    return pat.subn(repl, text)
+
+
 def patch_miui_settings_google_header(text: str) -> tuple:
     """Always call AddGoogleSettingsHeaders() (the Settings "Google" tab
     entries): the call is gated by IS_GLOBAL_BUILD, so CN hides the tab.
@@ -6359,6 +6380,7 @@ def main() -> None:
     settings_methods = [
         (["*.smali"], patch_notification_count_smali),
         (["MiuiSettings.smali"], patch_miui_settings_google_header),
+        (["MiuiShortcut$Key.smali"], patch_miui_shortcut_key_global),
     ]
     if region != "CN":
         settings_replace += [
