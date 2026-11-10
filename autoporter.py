@@ -6136,7 +6136,9 @@ def main() -> None:
         SETTINGS_APK, "settings",
         settings_replace,
         patch_root,
-        array_patches=SETTINGS_ARRAY_PATCHES,
+        # Disabled: keep the stock BgEffectDataManager gradientColors1/2/3
+        # (the 6 color arrays SETTINGS_ARRAY_PATCHES used to rewrite).
+        # array_patches=SETTINGS_ARRAY_PATCHES,
         res_array_funcs=[("array*.xml", patch_notification_arrays)],
         method_funcs=settings_methods,
         res_replace_patches=SETTINGS_CAMERA_COLON_PATCHES,
