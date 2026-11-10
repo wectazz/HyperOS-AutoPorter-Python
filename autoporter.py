@@ -580,6 +580,19 @@ MIUIHOME_RES_PATCHES = [
      r'(regionType=["\'])global(["\'])',
      r"\g<1>all\g<2>"),
 ]
+# SecurityCoreAdd.apk (product/app): the gesture-function pages read
+# res/xml/shortcut_function_map.xml, where launch_google_search is gated
+# regionType="global" and launch_voice_assistant "cn"; on CN the map drops
+# Google so the gesture settings never list it. Flip the Google entry to
+# "all" (XiaoAI stays cn-only). Always, both modes; missing APK/no match
+# only warns.
+SECURITY_CORE_ADD_APK = "product/app/SecurityCoreAdd/SecurityCoreAdd.apk"
+SECURITY_CORE_ADD_RES_PATCHES = [
+    ("shortcut_function_map.xml",
+     r'(<FunctionInfo\s+function="launch_google_search"\s+regionType=")'
+     r'global(")',
+     r"\g<1>all\g<2>"),
+]
 # Settings.apk .array-data replacements (step 4g2, always, both modes).
 # Old blocks are matched by their 16 float values (as ints — robust to the
 # декомпилер's :array_NNN label numbering, which shifts between builds),
@@ -6443,6 +6456,16 @@ def main() -> None:
     patch_apk_res(
         MIUIHOME_APK, "miuihome",
         MIUIHOME_RES_PATCHES,
+        patch_root,
+    )
+
+    # Step 4g3c: SecurityCoreAdd.apk res patch — the gesture-function map
+    # (res/xml/shortcut_function_map.xml) marks launch_google_search
+    # regionType="global", so CN drops it and the gesture settings never
+    # list Google. Flip it to "all". Always, both modes.
+    patch_apk_res(
+        SECURITY_CORE_ADD_APK, "securitycoreadd",
+        SECURITY_CORE_ADD_RES_PATCHES,
         patch_root,
     )
 
