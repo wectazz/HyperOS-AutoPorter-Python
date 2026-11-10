@@ -654,6 +654,18 @@ SETTINGS_TEMPLATE_FACTORY_OLD = (
     "Fragment$$ExternalSyntheticBUOutline0;->m(Ljava/lang/String;"
     "Ljava/lang/Object;Ljava/lang/Object;)V")
 SETTINGS_TEMPLATE_FACTORY_NEW = "    nop"
+# KeySettings (power-button function list): on CN the Google-assistant entry
+# is removed unconditionally and the XiaoAI entry kept; force the global
+# branch so the Google option stays visible/selectable on CN too. On global
+# the register is already true, so this is a behavioral no-op there. The
+# `v4` form is unique (the other IS_GLOBAL_BUILD read is `v0`), and the
+# const-string right after pins the exact block (the function-list builder).
+SETTINGS_KEY_POWER_GLOBAL_OLD = (
+    "    sget-boolean v4, Lmiui/os/Build;->IS_GLOBAL_BUILD:Z\n\n"
+    "    const-string v5, \"launch_voice_assistant\"")
+SETTINGS_KEY_POWER_GLOBAL_NEW = (
+    "    const/4 v4, 0x1\n\n"
+    "    const-string v5, \"launch_voice_assistant\"")
 # MIUI14 INDEX_MAP (DeviceBasicInfoPresenter$1) reorder: Screen size (logical
 # 3) next to CPU, RAM (logical 5) next to Resolution. The 5->3 and 7->6 puts
 # share the same register line ({p0, v0, v2}); patch only the first one.
@@ -1763,6 +1775,7 @@ DEBLOAT_HOS4: List[str] = [
     "product/priv-app/facebook-installer",
     "product/priv-app/facebook-services",
     "product/priv-app/VoiceAssistAndroidT",
+    "product/priv-app/PersonalAssistant",
     # system_ext/app
     "system_ext/app/DebugLoggerUI",
     "system_ext/app/digitalkey",
@@ -3053,6 +3066,82 @@ def apply_dialer(build_root: Path, region: str) -> None:
         GMS_DIALER_RES_PATCHES,
         build_root,
     )
+
+
+# Long-press power -> Google assistant (Gemini) on every region. The stock
+# shortcut config gates functions by build region: CN firmware lists only
+# launch_voice_assistant (XiaoAI) for KEYCODE_POWER long press, global lists
+# launch_google_search with "global": 1. MiuiKeyShortcutRuleManager picks the
+# FIRST functions[] entry that passes isLegaDataInCurrentRule as the default
+# (that check accepts global 0/2 on CN and 1/2 on global), and the trigger
+# (PowerKeyRule.triggerLongPress -> ShortCutActionsUtils.launchGoogleSearch ->
+# BaseMiuiPhoneWindowManager.launchAssistAction -> startAssist) launches the
+# configured default assistant (Gemini via the Google app) on any region.
+# Force launch_google_search to be that first entry with "global": 2; the
+# remaining entries stay as selectable choices.
+POWER_KEY_CODE = 26
+POWER_KEY_ACTION = "long_press_power_key"
+POWER_KEY_GOOGLE_FUNCTION = "launch_google_search"
+POWER_KEY_GOOGLE_ENTRY = {"function": POWER_KEY_GOOGLE_FUNCTION, "global": 2}
+
+
+def _patch_power_key_shortcut_json(path: Path) -> bool:
+    """Put launch_google_search first in long_press_power_key.functions with
+    global:2. Returns True when the file changed; parse errors only warn."""
+    import json
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        print(f"  [warn] cannot parse {path.name}: {exc}")
+        return False
+    changed = False
+    for rule in data.get("singleKeyRules") or []:
+        if not isinstance(rule, dict) or rule.get("primaryKey") != POWER_KEY_CODE:
+            continue
+        for press in rule.get("singlePress") or []:
+            if (not isinstance(press, dict)
+                    or press.get("action") != POWER_KEY_ACTION):
+                continue
+            funcs = [f for f in (press.get("functions") or [])
+                     if isinstance(f, dict)]
+            rest = [f for f in funcs
+                    if f.get("function") != POWER_KEY_GOOGLE_FUNCTION]
+            wanted = [dict(POWER_KEY_GOOGLE_ENTRY)] + rest
+            if funcs != wanted:
+                press["functions"] = wanted
+                changed = True
+    if changed:
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    return changed
+
+
+def apply_power_button_gemini(build_root: Path) -> None:
+    """Both modes: make long-press power launch the default assistant
+    (launch_google_search -> startAssist -> Gemini via Google app) instead of
+    the region-gated XiaoAI entry, by rewriting the shortcut JSON. Only the
+    config is touched: the trigger path already supports launch_google_search
+    on CN (PowerKeyRule checks it before the voice-assistant branch, and
+    MiuiShortcutObserver.hasCustomizedFunction preserves the value there).
+    Missing files only warn; re-runs are idempotent."""
+    print("=== Power button long-press -> Google assistant (all regions) ===")
+    targets = [
+        build_root / "system_ext/etc/input/miui_shortcut_config.json",
+        build_root / "product/etc/input/miui_shortcut_config.json",
+    ]
+    found = False
+    for path in targets:
+        if not path.is_file():
+            continue
+        found = True
+        rel = path.relative_to(build_root)
+        if _patch_power_key_shortcut_json(path):
+            print(f"  {rel}: launch_google_search is now the first "
+                  f"long_press_power_key function (global:2)")
+        else:
+            print(f"  {rel}: already up to date")
+    if not found:
+        print("  [warn] no miui_shortcut_config.json found, skip")
+    print()
 
 
 def patch_device_features(build_root: Path, aod_fullscreen: str) -> None:
@@ -5997,6 +6086,14 @@ def main() -> None:
     else:
         print("MIUI dialer skipped (--dialer no).\n")
 
+    # Step 4c5c: long-press power -> Google assistant (Gemini) on every
+    # region. Stock CN lists only launch_voice_assistant (XiaoAI) for the
+    # power key; make launch_google_search the first eligible function
+    # (global:2). Both modes; only the shortcut JSON is touched (the
+    # trigger path already supports it on CN), plus the Settings UI gate in
+    # the smali step below.
+    apply_power_button_gemini(patch_root)
+
     # Step 4c6: hos3->hos4 vibrator fix on the stock tree (vintf XML + hw
     # service binary; odm exists only in stock). Port mode only, not
     # dsv-gated (functional port fix, not signature disabling). The
@@ -6124,6 +6221,9 @@ def main() -> None:
         + [(["MiuiMyDeviceDetailSettings.smali"],
             SETTINGS_ALL_SPECS_INTL_OLD,
             SETTINGS_ALL_SPECS_INTL_NEW)]
+        + [(["KeySettings.smali"],
+            SETTINGS_KEY_POWER_GLOBAL_OLD,
+            SETTINGS_KEY_POWER_GLOBAL_NEW)]
         + [(["MiuiMyDeviceSettings.smali"],
             SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD,
             SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW)]
