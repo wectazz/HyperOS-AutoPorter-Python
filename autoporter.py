@@ -2992,21 +2992,29 @@ def apply_init_rc_tweak(build_root: Path) -> None:
             text += "\n"
         text += "\n".join(INIT_RC_APPEND) + "\n"
         changed = True
-    if INIT_RC_GEMINI_GUARD not in text:
+    if INIT_RC_GUARD not in text:
         if text and not text.endswith("\n"):
             text += "\n"
-        text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
+        text += "\n".join(INIT_RC_APPEND) + "\n"
         changed = True
+    # DEBUG: Gemini init seeding disabled (geminifix block + geminifix.sh).
+    # Re-enable by uncommenting this block and the script write below.
+    # if INIT_RC_GEMINI_GUARD not in text:
+    #     if text and not text.endswith("\n"):
+    #         text += "\n"
+    #     text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
+    #     changed = True
     if not changed:
         print(f"  already present, skip {INIT_RC}\n")
         return
     rc.write_text(text)
-    script = build_root / GEMINI_FIX_SCRIPT_REL
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(GEMINI_FIX_SCRIPT)
-    script.chmod(0o755)
-    print(f"  appended animationfix/geminifix blocks to {INIT_RC}")
-    print(f"  wrote {GEMINI_FIX_SCRIPT_REL} (0755)\n")
+    # DEBUG: geminifix.sh creation disabled together with the block above.
+    # script = build_root / GEMINI_FIX_SCRIPT_REL
+    # script.parent.mkdir(parents=True, exist_ok=True)
+    # script.write_text(GEMINI_FIX_SCRIPT)
+    # script.chmod(0o755)
+    print(f"  appended animationfix block to {INIT_RC}")
+    print("  [debug] geminifix block + geminifix.sh disabled\n")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
