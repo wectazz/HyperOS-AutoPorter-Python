@@ -6386,6 +6386,11 @@ def main() -> None:
             SETTINGS_SPRING_RECYCLER_OLD,
             SETTINGS_SPRING_RECYCLER_NEW)]
     )
+    settings_replace += [
+        (["MiuiMyDeviceSettings.smali"],
+         SETTINGS_DEVICE_PARAMS_MIUI14_OLD,
+         SETTINGS_DEVICE_PARAMS_MIUI14_NEW),
+    ]
     settings_methods = [
         (["*.smali"], patch_notification_count_smali),
         (["MiuiSettings.smali"], patch_miui_settings_google_header),
@@ -6393,19 +6398,11 @@ def main() -> None:
         # English lookup key), so they apply on CN too — the multilang
         # overlays cannot translate values baked into device_info.json.
         (["DeviceBasicInfoPresenter.smali"], patch_settings_card_titles),
+        # MIUI14 icon cards + compact order on every region (opt-in style
+        # for CN builds; global needs the same pieces for its grid).
+        (["DeviceBasicInfoPresenter$1.smali"], patch_settings_index_map),
+        (["DeviceBasicInfoPresenter.smali"], patch_settings_memory_type),
     ]
-    if region != "CN":
-        settings_replace += [
-            (["MiuiMyDeviceSettings.smali"],
-             SETTINGS_DEVICE_PARAMS_MIUI14_OLD,
-             SETTINGS_DEVICE_PARAMS_MIUI14_NEW),
-        ]
-        settings_methods += [
-            (["DeviceBasicInfoPresenter$1.smali"],
-             patch_settings_index_map),
-            (["DeviceBasicInfoPresenter.smali"],
-             patch_settings_memory_type),
-        ]
     patch_apk_apktool(
         SETTINGS_APK, "settings",
         settings_replace,
