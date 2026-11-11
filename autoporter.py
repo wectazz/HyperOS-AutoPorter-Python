@@ -6406,18 +6406,20 @@ def main() -> None:
     # (both unpacked trees, both modes, always). On the fenrir variant the
     # exact ro.build.fingerprint key is additionally ensured in
     # system/system/build.prop (upsert — appended when absent).
-    apply_fingerprint([UNPACKED_PORT_DIR, UNPACKED_STOCK_DIR],
-                      DEVICES[args.device]["fingerprint"])
-    if args.variant == "fenrir":
-        fenrir_prop = patch_root / SYSTEM_BUILD_PROP
-        if fenrir_prop.is_file():
-            _upsert_prop(fenrir_prop, "ro.build.fingerprint",
-                         DEVICES[args.device]["fingerprint"])
-            print("  fenrir: ro.build.fingerprint ensured in "
-                  "system/system/build.prop.\n")
-        else:
-            print("  [warn] system/system/build.prop missing, "
-                  "skip fenrir fingerprint.\n")
+    # DEBUG: fingerprint replacement disabled for base AND fenrir.
+    # apply_fingerprint([UNPACKED_PORT_DIR, UNPACKED_STOCK_DIR],
+    #                   DEVICES[args.device]["fingerprint"])
+    # if args.variant == "fenrir":
+    #     fenrir_prop = patch_root / SYSTEM_BUILD_PROP
+    #     if fenrir_prop.is_file():
+    #         _upsert_prop(fenrir_prop, "ro.build.fingerprint",
+    #                      DEVICES[args.device]["fingerprint"])
+    #         print("  fenrir: ro.build.fingerprint ensured in "
+    #               "system/system/build.prop.\n")
+    #     else:
+    #         print("  [warn] system/system/build.prop missing, "
+    #               "skip fenrir fingerprint.\n")
+    print("  [debug] fingerprint replacement disabled (base/fenrir)\n")
 
     # Step 4c5: device_features overlay (committed duchamp/duchamp.xml over
     # the donor copy) + patch (AOD/doze/display/fps tweaks, fullscreen flag
