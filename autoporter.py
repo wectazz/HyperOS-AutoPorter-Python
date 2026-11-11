@@ -546,6 +546,10 @@ POWERKEEPER_METHOD_PATCHES = [
 # international VoLTE path only when it is true; force the register to 1
 # right after the read (same register, values below v16 -> const/4 is safe:
 # p1 maps to v8 in the .locals 7 method, v1/v8 are plain locals).
+# Also fixes CN muting non-white-listed notifications by default:
+# NotificationSettingsManager.<clinit> computes USE_WHITE_LISTS =
+# !IS_INTERNATIONAL_BUILD; the read is forced to 1 (the following xor
+# stores false), pinned by the xor so only that occurrence changes.
 MIUISYSTEMUI_APK = "system_ext/priv-app/MiuiSystemUI/MiuiSystemUI.apk"
 MIUISYSTEMUI_REPLACE_PATCHES = [
     (["com/android/systemui/statusbar/pipeline/mobile/ui/binder/"
@@ -562,6 +566,17 @@ MIUISYSTEMUI_REPLACE_PATCHES = [
      "    sget-boolean v8, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z",
      "    sget-boolean v8, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n\n"
      "    const/4 v8, 0x1"),
+    # CN mutes notifications by default via the white-list gate:
+    # USE_WHITE_LISTS = !IS_INTERNATIONAL_BUILD in <clinit> (the xor right
+    # after the read). Force the international branch so the xor stores
+    # false (white list off). Target only this occurrence: the class has
+    # other v0 reads for focus blocking, which stay CN.
+    (["com/miui/systemui/notification/NotificationSettingsManager.smali"],
+     "    sget-boolean v0, Lcom/miui/utils/configs/MiuiConfigs;"
+     "->IS_INTERNATIONAL_BUILD:Z\n\n"
+     "    xor-int/lit8 v0, v0, 0x1",
+     "    const/4 v0, 0x1\n\n"
+     "    xor-int/lit8 v0, v0, 0x1"),
 ]
 # MIUIWeather.apk (step 4c2b, both modes): the GLOBAL Weather build hard-
 # exits on CN ROMs ("Region-ROM mismatch detected: region=global,
