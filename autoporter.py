@@ -562,6 +562,22 @@ MIUISYSTEMUI_REPLACE_PATCHES = [
      "    sget-boolean v8, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n\n"
      "    const/4 v8, 0x1"),
 ]
+# MIUIWeather.apk (step 4c2b, both modes): the GLOBAL Weather build hard-
+# exits on CN ROMs ("Region-ROM mismatch detected: region=global,
+# IS_INTERNATIONAL_BUILD=false. Exiting app."). The value comes through the
+# Rust weather_app shim MiuiOsBuild_is_international_build; its PLT stub is
+# patched to return true inside the app only, so the check passes without
+# globalizing the whole ROM via ro.product.mod_device. The CN build is left
+# alone (it carries no GlobalWeatherProvider and would trip the inverse
+# check if forced). Idempotent; missing APK/symbol only warns.
+WEATHER_APK = "product/app/MIUIWeather/MIUIWeather.apk"
+WEATHER_DART_LIB = "lib/arm64-v8a/libapp.so"
+WEATHER_NATIVE_LIB = "lib/arm64-v8a/libweather_app.so"
+WEATHER_REGION_MARKER = b"Region-ROM mismatch detected"
+WEATHER_GLOBAL_MARKER = b"GlobalWeatherProvider"
+WEATHER_REGION_SYMBOL = "MiuiOsBuild_is_international_build"
+# mov w0, #1 ; ret ; nop ; nop (16-byte AArch64 PLT stub)
+WEATHER_REGION_PATCH = bytes.fromhex("20008052c0035fd61f2003d51f2003d5")
 # MIUI dialer (global firmwares only — CN ships it already; gated by
 # --dialer). EU firmwares carry no dialer in mi_ext, so the committed
 # dialer_gl/ set is used; other global regions move the apps from the
@@ -1818,6 +1834,10 @@ DEBLOAT_HOS4: List[str] = [
     "product/app/CatchLog",
     "product/app/Healthkit",
     "product/app/HybridPlatform",
+    # CN gallery plugin: the global build (com.hyper.gallery.plugin) is
+    # supplied by the mod set in its OWN folder — this CN copy must go, or
+    # the scanner sees two APKs with the same package name.
+    "product/app/HyperGalleryPluginCn",
     "product/app/MiBugReportOS4",
     "product/app/MINextpay",
     "product/app/MIS",
@@ -4408,6 +4428,177 @@ def _validate_apk_dexes(apk_path: Path) -> None:
                     f"{apk_path.name}: {name} checksum mismatch")
 
 
+def _elf_section_map(data: bytes):
+    """ELF64-LE section name -> {addr, off, size, link}; {} on any error."""
+    try:
+        if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+            return {}
+        shoff = struct.unpack_from("<Q", data, 0x28)[0]
+        shentsize = struct.unpack_from("<H", data, 0x3A)[0]
+        shnum = struct.unpack_from("<H", data, 0x3C)[0]
+        shstrndx = struct.unpack_from("<H", data, 0x3E)[0]
+        if not shoff or not shnum or shstrndx >= shnum:
+            return {}
+        secs = []
+        for i in range(shnum):
+            off = shoff + i * shentsize
+            name, typ, flags, addr, offset, size, link, info, align, entsize = \
+                struct.unpack_from("<IIQQQQIIQQ", data, off)
+            secs.append(dict(name=name, addr=addr, off=offset, size=size,
+                             link=link))
+        strtab = secs[shstrndx]
+        out = {}
+        for sec in secs:
+            name_off = strtab["off"] + sec["name"]
+            end = data.find(b"\0", name_off)
+            if end < 0:
+                continue
+            out[data[name_off:end].decode("utf-8", "replace")] = sec
+        return out
+    except (struct.error, IndexError):
+        return {}
+
+
+def _elf_plt_stub_offset(data: bytes, symbol: str):
+    """File offset of the 16-byte AArch64 PLT stub for `symbol` (None when
+    the ELF is unparseable or the symbol has no PLT relocation)."""
+    secs = _elf_section_map(data)
+    dynsym = secs.get(".dynsym")
+    dynstr = secs.get(".dynstr")
+    rela = secs.get(".rela.plt")
+    plt = secs.get(".plt")
+    if not all((dynsym, dynstr, rela, plt)):
+        return None
+    # .dynsym entry: st_name u32, st_info u8, st_other u8, st_shndx u16,
+    # st_value u64, st_size u64 (24 bytes).
+    sym_idx = None
+    for i in range(dynsym["size"] // 24):
+        st_name = struct.unpack_from("<I", data, dynsym["off"] + i * 24)[0]
+        start = dynstr["off"] + st_name
+        end = data.find(b"\0", start)
+        if end < 0:
+            continue
+        if data[start:end].decode("utf-8", "replace") == symbol:
+            sym_idx = i
+            break
+    if sym_idx is None:
+        return None
+    # .rela.plt entry: r_offset u64, r_info u64 (symbol = r_info >> 32),
+    # r_addend i64. r_offset is the GOT slot the PLT stub loads.
+    got = None
+    for i in range(rela["size"] // 24):
+        r_offset, r_info = struct.unpack_from("<QQ", data,
+                                              rela["off"] + i * 24)
+        if (r_info >> 32) == sym_idx:
+            got = r_offset
+            break
+    if got is None:
+        return None
+    # Stub: adrp x16, <page>; ldr x17, [x16, #imm]; add x16, x16, ...; br x17.
+    for pos in range(plt["off"], plt["off"] + plt["size"], 16):
+        insn0, insn1, insn2, insn3 = struct.unpack_from("<IIII", data, pos)
+        if (insn0 & 0x9F000000) != 0x90000000:       # adrp x16
+            continue
+        if (insn1 & 0xFFC00000) != 0xF9400000:       # ldr x17, [x16, #imm]
+            continue
+        if insn3 != 0xD61F0220:                      # br x17
+            continue
+        pc = plt["addr"] + (pos - plt["off"])
+        imm = (((insn0 >> 5) & 0x7FFFF) << 2) | ((insn0 >> 29) & 3)
+        if imm & (1 << 20):
+            imm -= 1 << 21
+        page = (pc & ~0xFFF) + (imm << 12)
+        if page + ((insn1 >> 10) & 0xFFF) * 8 == got:
+            return pos
+    return None
+
+
+def patch_weather_region_check(build_root: Path) -> None:
+    """The GLOBAL MIUI Weather build (Flutter) hard-exits on CN ROMs: its
+    Dart code compares its build region (global) with
+    miui.os.Build.IS_INTERNATIONAL_BUILD (false on this port) and logs
+    'Region-ROM mismatch detected ... Exiting app.' -> finish. The value is
+    fetched through the Rust weather_app shim
+    MiuiOsBuild_is_international_build; patch that shim's PLT stub inside
+    the APK to return true, so the check passes on the CN base without
+    touching ro.product.mod_device (which would globalize the whole ROM).
+    Only global builds are touched (they carry GlobalWeatherProvider in the
+    Dart snapshot; the CN build lacks it and forcing the value there would
+    trip the inverse check). Idempotent; missing APK/symbol only warns.
+    The APK is rezipped with the original META-INF/signing block (stock
+    cert, stale digests; DSV lets it load); STORED libs stay 4096-aligned
+    via _rewrite_apk_zip."""
+    print("=== Patching Weather region check (global APK) ===")
+    apk = build_root / WEATHER_APK
+    if not apk.is_file():
+        print(f"  [missing, skip] {WEATHER_APK}\n")
+        return
+    try:
+        with zipfile.ZipFile(apk) as z:
+            names = set(z.namelist())
+            if (WEATHER_DART_LIB not in names
+                    or WEATHER_NATIVE_LIB not in names):
+                print("  [skip] libapp.so/libweather_app.so not found\n")
+                return
+            dart = z.read(WEATHER_DART_LIB)
+            lib = z.read(WEATHER_NATIVE_LIB)
+    except (zipfile.BadZipFile, OSError) as exc:
+        print(f"  [warn] cannot read {WEATHER_APK}: {exc}\n")
+        return
+    if (WEATHER_REGION_MARKER not in dart
+            or WEATHER_GLOBAL_MARKER not in dart):
+        print("  not a global Weather build (region check/provider absent), "
+              "skip\n")
+        return
+    # A patched stub no longer matches the PLT pattern, so look for the
+    # patch bytes in .plt first (re-runs stay silent).
+    plt = _elf_section_map(lib).get(".plt")
+    if (plt and WEATHER_REGION_PATCH
+            in lib[plt["off"]:plt["off"] + plt["size"]]):
+        print("  already patched, skip\n")
+        return
+    stub = _elf_plt_stub_offset(lib, WEATHER_REGION_SYMBOL)
+    if stub is None:
+        print(f"  [warn] PLT stub for {WEATHER_REGION_SYMBOL} not found, "
+              f"skip\n")
+        return
+    if lib[stub:stub + len(WEATHER_REGION_PATCH)] == WEATHER_REGION_PATCH:
+        print("  already patched, skip\n")
+        return
+    patched = bytearray(lib)
+    patched[stub:stub + len(WEATHER_REGION_PATCH)] = WEATHER_REGION_PATCH
+    tmp = apk.with_name(apk.name + ".new")
+    if tmp.exists():
+        tmp.unlink()
+    try:
+        with zipfile.ZipFile(apk) as zin, zipfile.ZipFile(
+                tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zout:
+            for info in zin.infolist():
+                zi = zipfile.ZipInfo(info.filename,
+                                     date_time=info.date_time)
+                zi.compress_type = info.compress_type
+                zi.external_attr = info.external_attr
+                zi.create_system = info.create_system
+                blob = (bytes(patched) if info.filename == WEATHER_NATIVE_LIB
+                        else zin.read(info.filename))
+                zout.writestr(zi, blob)
+        if not reuse_original_signature(apk, tmp):
+            print("  [warn] no v1 signature to reuse, keep original\n")
+            tmp.unlink(missing_ok=True)
+            return
+        with zipfile.ZipFile(tmp) as z:
+            if set(z.namelist()) != names:
+                print("  [warn] entry set changed, keep original\n")
+                tmp.unlink(missing_ok=True)
+                return
+        os.replace(tmp, apk)
+        print(f"  patched {WEATHER_REGION_SYMBOL} PLT stub at 0x{stub:x}, "
+              f"{apk.name} rebuilt\n")
+    except (OSError, zipfile.BadZipFile) as exc:
+        print(f"  [warn] weather APK rebuild failed: {exc}\n")
+        tmp.unlink(missing_ok=True)
+
+
 def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
                     build_root: Path, array_patches=None,
                     res_array_funcs=None, method_funcs=None,
@@ -6180,6 +6371,13 @@ def main() -> None:
         # Same overlay onto the single stock tree (before debloat).
         apply_modded_apps(mod_dir, UNPACKED_STOCK_DIR)
         patch_root = UNPACKED_STOCK_DIR
+
+    # Step 4c2b: patch the global Weather app's region check (modded-app
+    # global build): its Dart code exits on CN ROMs (region-global vs
+    # IS_INTERNATIONAL_BUILD=false). Force the Rust
+    # MiuiOsBuild_is_international_build shim to return true inside the app
+    # only (PLT stub), leaving ro.product.mod_device untouched.
+    patch_weather_region_check(patch_root)
 
     # Step 4c3: mi_ext tweaks (build.prop, uninstall-blob moves into
     # product/, nested dir drops) + product GMS permission removal. Both
