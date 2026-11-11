@@ -17,6 +17,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 from typing import List
+from urllib.parse import unquote, urlparse
 
 import requests
 from tqdm import tqdm
@@ -2129,10 +2130,69 @@ def setup_tools() -> None:
     print("Tools preparation complete.\n")
 
 
+def _github_release_asset_api(url: str, token: str):
+    """Map a github.com/<owner>/<repo>/releases/download/<tag>/<asset> URL
+    to the GitHub API asset endpoint. Private repos require a token with
+    Contents: read; returns None for non-GitHub-release URLs. Raises when
+    the API rejects the token or the asset is not found."""
+    parsed = urlparse(url)
+    if parsed.netloc not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 6 or parts[2] != "releases" or parts[3] != "download":
+        return None
+    owner, repo, tag = parts[0], parts[1], parts[4]
+    asset = unquote("/".join(parts[5:]))
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    resp = requests.get(api_url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    for item in resp.json().get("assets", []):
+        if item.get("name") == asset:
+            return item["url"]
+    raise RuntimeError(
+        f"GitHub release asset not found: {owner}/{repo} @ {tag}: {asset}")
+
+
 def download_file_with_progress(url: str, dest_path: Path) -> Path:
-    """Download file with tqdm progress bar."""
+    """Download file with tqdm progress bar. GitHub release assets go
+    through the API when GITHUB_TOKEN/GH_TOKEN is set (the repo is private,
+    so anonymous release URLs 404); every other URL is fetched directly."""
     print(f"Downloading: {url}")
-    response = requests.get(url, stream=True, timeout=30)
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    download_url = url
+    headers = {}
+    if token:
+        try:
+            api_asset = _github_release_asset_api(url, token)
+        except Exception as exc:
+            print(f"  [warn] GitHub release API resolve failed: {exc}")
+            api_asset = None
+        if api_asset:
+            download_url = api_asset
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/octet-stream",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+    response = requests.get(download_url, headers=headers, stream=True,
+                            timeout=30)
+    if (response.status_code in (403, 404)
+            and "github.com/" in url and "/releases/download/" in url):
+        if not token:
+            raise RuntimeError(
+                f"GitHub release asset returned {response.status_code}: {url}\n"
+                "The repository is private, so release assets need auth. "
+                "Set GITHUB_TOKEN (Contents: read) and pass it through sudo: "
+                "sudo GITHUB_TOKEN=\"$GITHUB_TOKEN\" python -u autoporter.py ...")
+        raise RuntimeError(
+            f"GitHub release asset returned {response.status_code}: {url}\n"
+            "Check that GITHUB_TOKEN has Contents: read on the repo and that "
+            "the release tag/asset exist.")
     response.raise_for_status()
     total_size = int(response.headers.get("content-length", 0))
 

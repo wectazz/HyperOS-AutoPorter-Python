@@ -1,5 +1,8 @@
 name: HyperOS AutoPorter Workflow
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -142,8 +145,10 @@ jobs:
           sudo python -m pip install --break-system-packages -r requirements.txt
 
       - name: Run AutoPorter
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          sudo python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }} --density ${{ inputs.density }} --aod-fullscreen ${{ inputs.aod_fullscreen }} --dialer ${{ inputs.dialer }} --device ${{ inputs.device }} --variant ${{ matrix.target }}
+          sudo GITHUB_TOKEN="$GITHUB_TOKEN" python -u autoporter.py --mode ${{ inputs.mode }} --hyper-version ${{ inputs.hyper_version }} --package-type ${{ inputs.package_type }} --debloat ${{ inputs.debloat }} --dsv ${{ inputs.dsv }} --decrypt-data ${{ inputs.decrypt_data }} --ext4-rw "${{ inputs.ext4_rw }}" --ext4-free-mb ${{ inputs.ext4_free_mb }} --density ${{ inputs.density }} --aod-fullscreen ${{ inputs.aod_fullscreen }} --dialer ${{ inputs.dialer }} --device ${{ inputs.device }} --variant ${{ matrix.target }}
 
       - name: Upload build sidecars (debug on failure)
         if: failure()
