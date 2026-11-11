@@ -568,15 +568,14 @@ MIUISYSTEMUI_REPLACE_PATCHES = [
      "    const/4 v8, 0x1"),
     # CN mutes notifications by default via the white-list gate:
     # USE_WHITE_LISTS = !IS_INTERNATIONAL_BUILD in <clinit> (the xor right
-    # after the read). Force the international branch so the xor stores
-    # false (white list off). Target only this occurrence: the class has
-    # other v0 reads for focus blocking, which stay CN.
+    # after the read). EVERY `sget-boolean v0, MiuiConfigs->IS_INTERNATIONAL_BUILD`
+    # in this class becomes `const/4 v0, 0x1` (MMETMA "notifications muted by
+    # default on CN" guide): <clinit>'s xor then stores false (white list off)
+    # and the focus-blocking gates take the international branch too.
     (["com/miui/systemui/notification/NotificationSettingsManager.smali"],
      "    sget-boolean v0, Lcom/miui/utils/configs/MiuiConfigs;"
-     "->IS_INTERNATIONAL_BUILD:Z\n\n"
-     "    xor-int/lit8 v0, v0, 0x1",
-     "    const/4 v0, 0x1\n\n"
-     "    xor-int/lit8 v0, v0, 0x1"),
+     "->IS_INTERNATIONAL_BUILD:Z",
+     "    const/4 v0, 0x1"),
 ]
 # MIUIWeather.apk (step 4c2b, both modes): the GLOBAL Weather build hard-
 # exits on CN ROMs ("Region-ROM mismatch detected: region=global,
