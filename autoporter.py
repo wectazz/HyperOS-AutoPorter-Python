@@ -6389,6 +6389,10 @@ def main() -> None:
     settings_methods = [
         (["*.smali"], patch_notification_count_smali),
         (["MiuiSettings.smali"], patch_miui_settings_google_header),
+        # Card titles are display-site only (the JSON Title stays the
+        # English lookup key), so they apply on CN too — the multilang
+        # overlays cannot translate values baked into device_info.json.
+        (["DeviceBasicInfoPresenter.smali"], patch_settings_card_titles),
     ]
     if region != "CN":
         settings_replace += [
@@ -6401,8 +6405,6 @@ def main() -> None:
              patch_settings_index_map),
             (["DeviceBasicInfoPresenter.smali"],
              patch_settings_memory_type),
-            (["DeviceBasicInfoPresenter.smali"],
-             patch_settings_card_titles),
         ]
     patch_apk_apktool(
         SETTINGS_APK, "settings",
