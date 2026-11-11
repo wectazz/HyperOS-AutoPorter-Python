@@ -4765,6 +4765,141 @@ def patch_apk_smali(apk_rel: str, tag: str, replace_patches,
     print()
 
 
+def _dex_defined_classes(java: str, baksmali_jar: Path, dex_path: Path,
+                         api: int) -> set:
+    """Class descriptors DEFINED in a dex (baksmali list classes, no smali)."""
+    proc = subprocess.run(
+        [java, "-jar", str(baksmali_jar), "list", "classes",
+         "--api", str(api), str(dex_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode:
+        print(proc.stdout[-1500:])
+        raise RuntimeError(f"baksmali list classes failed on {dex_path.name}")
+    return {line.strip() for line in proc.stdout.splitlines()
+            if line.strip().startswith("L") and line.strip().endswith(";")}
+
+
+def _apk_swap_entries(apk_path: Path, replacements) -> None:
+    """Rewrite an APK keeping every entry, its compress type and its
+    alignment; only the named entries (dex blobs) are replaced."""
+    tmp = apk_path.with_name(apk_path.name + ".dexswap")
+    if tmp.exists():
+        tmp.unlink()
+    with zipfile.ZipFile(apk_path) as zin, zipfile.ZipFile(
+            tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
+        for info in zin.infolist():
+            zi = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+            zi.compress_type = info.compress_type
+            zi.external_attr = info.external_attr
+            zi.create_system = info.create_system
+            if info.compress_type == zipfile.ZIP_STORED:
+                align = 4096 if info.filename.startswith("lib/") else 4
+                base = zout.fp.tell() + 30 + len(info.filename.encode("utf-8"))
+                zi.extra = b"\x00" * ((-base) % align)
+            blob = replacements.get(info.filename)
+            zout.writestr(zi, blob if blob is not None
+                          else zin.read(info.filename))
+    os.replace(tmp, apk_path)
+
+
+def patch_apk_smali_dexonly(apk_rel: str, tag: str, replace_patches,
+                            build_root: Path) -> None:
+    """Smali-patch an APK without touching its resources: rebuild ONLY the
+    dex files that DEFINE a class hit by the rules (baksmali/smali per dex),
+    then swap those dex entries back into the stock APK. resources.arsc,
+    res/*, AndroidManifest.xml and every other entry stay byte-identical.
+
+    Why not apkeditor: its full decode/rebuild re-encodes the whole resource
+    table (SystemUI: 6873 res XMLs rewritten, resources.arsc 4.6 MB -> 12.6 MB,
+    dimens floats rounded 262.31 -> 262.3) and on device that crashed
+    SystemUI in a loop, while the same smali edits applied with this dex-only
+    path boot fine. Missing APK only warns."""
+    apk_path = build_root / apk_rel
+    if not apk_path.is_file():
+        print(f"WARNING: {apk_rel} not found, skip APK smali patching.\n")
+        return
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError(
+            "java not found: install a JRE for baksmali/smali "
+            "(CI: default-jre-headless)")
+    baksmali_jar = TOOLS_DIR / "baksmali.jar"
+    smali_jar = TOOLS_DIR / "smali.jar"
+    for jar in (baksmali_jar, smali_jar):
+        if not jar.is_file():
+            raise RuntimeError(f"Missing tool jar: {jar}")
+
+    targets = {}
+    for basenames, _old, _new in replace_patches:
+        for base_name in basenames:
+            targets["L" + base_name[:-len(".smali")] + ";"] = base_name
+    if not targets:
+        return
+    print(f"=== Smali-patching {apk_path.name} (dex-only) ===")
+
+    work_root = Path(tempfile.mkdtemp(prefix=f"dexonly-{tag}-"))
+    replacements = {}
+    try:
+        with zipfile.ZipFile(apk_path) as zin:
+            orig_entries = [i.filename for i in zin.infolist()]
+            dex_names = [n for n in orig_entries if n.endswith(".dex")]
+            for dex in dex_names:
+                src = work_root / dex
+                src.write_bytes(zin.read(dex))
+                api = detect_dex_api(src)
+                hits = sorted(set(targets) & _dex_defined_classes(
+                    java, baksmali_jar, src, api))
+                if not hits:
+                    continue
+                print(f"  {dex}: {len(hits)} target class(es)")
+                out_dir = work_root / (dex[:-len(".dex")] + "_smali")
+                run_logged([java, "-jar", str(baksmali_jar), "d", "--api",
+                            str(api), str(src), "-o", str(out_dir)],
+                           f"baksmali {dex}")
+                if not any(out_dir.rglob("*.smali")):
+                    raise RuntimeError(
+                        f"baksmali produced no smali for {dex}")
+                rules = [rule for rule in replace_patches
+                         if any("L" + b[:-len(".smali")] + ";" in hits
+                                for b in rule[0])]
+                _apply_apk_replace_patches([out_dir], rules, out_dir)
+                out_dex = work_root / (dex + ".new")
+                run_logged([java, "-jar", str(smali_jar), "a", "--api",
+                            str(api), str(out_dir), "-o", str(out_dex)],
+                           f"smali {dex}")
+                check_dex_blob(out_dex, f"smali {dex}")
+                before = count_dex_classes(java, baksmali_jar, src, api)
+                after = count_dex_classes(java, baksmali_jar, out_dex, api)
+                if after != before:
+                    raise RuntimeError(
+                        f"smali {dex}: class count changed {before} -> {after}, "
+                        "refusing to pack a damaged dex")
+                replacements[dex] = out_dex.read_bytes()
+        if not replacements:
+            print(f"WARNING: no target classes found in {apk_path.name}.\n")
+            return
+        tmp = apk_path.with_name(apk_path.name + ".new")
+        if tmp.exists():
+            tmp.unlink()
+        shutil.copy2(apk_path, tmp)
+        _apk_swap_entries(tmp, replacements)
+        with zipfile.ZipFile(tmp) as zout:
+            if {i.filename for i in zout.infolist()} != set(orig_entries):
+                raise RuntimeError(
+                    f"dex-only rebuild changed the entry set of "
+                    f"{apk_path.name}")
+        _validate_apk_dexes(tmp)
+        _apply_build_signature(apk_path, tmp)
+        os.replace(tmp, apk_path)
+        print(f"APK smali patching done: {apk_path.name} "
+              f"({apk_path.stat().st_size} bytes, {len(orig_entries)} "
+              f"entries; dex rebuilt: {', '.join(sorted(replacements))}).\n")
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
+    drop_oat_next_to(apk_path, "patched")
+    print()
+
+
 # Linker-required value fixups for the apktool path (applied to the
 # decoded tree before rules): stock ships raw strings where aapt2 demands
 # typed references. Each swap is semantically identical (boolean true ==
@@ -6710,10 +6845,11 @@ def main() -> None:
         patch_root,
         method_body_patches=POWERKEEPER_METHOD_PATCHES,
     )
-    # Step 4g2d: SystemUI VoLTE icon on CN — force the three
-    # IS_INTERNATIONAL_BUILD reads to true. Always, both modes; the
-    # call drops the stale oat/ next to SystemUI.
-    patch_apk_smali(
+    # Step 4g2d: SystemUI VoLTE icon + notification white-list gates on CN.
+    # Always, both modes; dex-only (resources stay byte-identical — the
+    # apkeditor full rebuild re-encoded 6873 res files and crashed SystemUI
+    # on device). Drops the stale oat/ next to SystemUI.
+    patch_apk_smali_dexonly(
         MIUISYSTEMUI_APK, "miuisystemui",
         MIUISYSTEMUI_REPLACE_PATCHES,
         patch_root,
