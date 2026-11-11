@@ -6354,12 +6354,12 @@ def main() -> None:
         shutil.copy2(stock_settings, BASE_DIR / "Settings_stock.apk")
         print("Stock Settings.apk copied for the debug artifact "
               "(Settings_stock.apk)\n")
-    # The device params grid already exists on CN (with the MIUI15 card
-    # style), so the MIUI14 restyle is global-only: presenter flag,
-    # INDEX_MAP order, half-width memory card and RU titles. The INTL gate,
-    # template registration and the TemplateFactory no-op are safe on both
-    # (on CN the gate is already false and the template may be registered
-    # twice, so the no-op still protects against the duplicate exception).
+    # The MIUI14 icon-card restyle (presenter flag, INDEX_MAP order,
+    # half-width memory card) and the RU card titles apply on every region
+    # (CN included). The INTL gate, template registration and the
+    # TemplateFactory no-op are safe on both (on CN the gate is already
+    # false and the template may be registered twice, so the no-op still
+    # protects against the duplicate exception).
     settings_replace = (
         keyboard_replace_rules(["AvailableVirtualKeyboardFragment.smali"])
         + [(["InputMethodFunctionSelectUtils.smali"],
