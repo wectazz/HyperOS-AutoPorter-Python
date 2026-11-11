@@ -540,6 +540,28 @@ POWERKEEPER_METHOD_PATCHES = [
      ["setScreenEffect(Ljava/lang/String;II)V",
       "setScreenEffectInternal(ILjava/lang/String;)V"], "keep", None),
 ]
+# MiuiSystemUI.apk (always, both modes): show the VoLTE icon on CN. Each of
+# the three classes reads IS_INTERNATIONAL_BUILD exactly once and takes the
+# international VoLTE path only when it is true; force the register to 1
+# right after the read (same register, values below v16 -> const/4 is safe:
+# p1 maps to v8 in the .locals 7 method, v1/v8 are plain locals).
+MIUISYSTEMUI_APK = "system_ext/priv-app/MiuiSystemUI/MiuiSystemUI.apk"
+MIUISYSTEMUI_REPLACE_PATCHES = [
+    (["com/android/systemui/statusbar/pipeline/mobile/ui/binder/"
+      "MiuiMobileIconBinder$bind$1$1$10.smali"],
+     "    sget-boolean p1, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z",
+     "    sget-boolean p1, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n\n"
+     "    const/4 p1, 0x1"),
+    (["com/android/systemui/statusbar/pipeline/mobile/ui/viewmodel/"
+      "MiuiCellularIconVM$special$$inlined$combine$1$3.smali"],
+     "    sget-boolean v1, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z",
+     "    sget-boolean v1, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n\n"
+     "    const/4 v1, 0x1"),
+    (["com/android/systemui/MiuiOperatorCustomizedPolicy.smali"],
+     "    sget-boolean v8, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z",
+     "    sget-boolean v8, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n\n"
+     "    const/4 v8, 0x1"),
+]
 # MIUI dialer (global firmwares only — CN ships it already; gated by
 # --dialer). EU firmwares carry no dialer in mi_ext, so the committed
 # dialer_gl/ set is used; other global regions move the apps from the
@@ -6403,6 +6425,14 @@ def main() -> None:
         [],
         patch_root,
         method_body_patches=POWERKEEPER_METHOD_PATCHES,
+    )
+    # Step 4g2d: SystemUI VoLTE icon on CN — force the three
+    # IS_INTERNATIONAL_BUILD reads to true. Always, both modes; the
+    # call drops the stale oat/ next to SystemUI.
+    patch_apk_smali(
+        MIUISYSTEMUI_APK, "miuisystemui",
+        MIUISYSTEMUI_REPLACE_PATCHES,
+        patch_root,
     )
 
     # Step 4g3: DevicesOverlay.apk resource patch (status_bar_padding_top
