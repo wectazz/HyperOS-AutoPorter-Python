@@ -569,12 +569,15 @@ MIUISYSTEMUI_REPLACE_PATCHES = [
     # CN mutes notifications by default via the white-list gate:
     # USE_WHITE_LISTS = !IS_INTERNATIONAL_BUILD in <clinit> (the xor right
     # after the read). EVERY `sget-boolean v0, MiuiConfigs->IS_INTERNATIONAL_BUILD`
-    # in this class becomes `const/4 v0, 0x1` (MMETMA "notifications muted by
-    # default on CN" guide): <clinit>'s xor then stores false (white list off)
-    # and the focus-blocking gates take the international branch too.
+    # in this class gets `const/4 v0, 0x1` inserted right below the read,
+    # keeping the original instruction (MMETMA "notifications muted by
+    # default on CN" guide): <clinit>'s xor then stores false (white list
+    # off) and the focus-blocking gates take the international branch too.
     (["com/miui/systemui/notification/NotificationSettingsManager.smali"],
      "    sget-boolean v0, Lcom/miui/utils/configs/MiuiConfigs;"
      "->IS_INTERNATIONAL_BUILD:Z",
+     "    sget-boolean v0, Lcom/miui/utils/configs/MiuiConfigs;"
+     "->IS_INTERNATIONAL_BUILD:Z\n\n"
      "    const/4 v0, 0x1"),
 ]
 # MIUIWeather.apk (step 4c2b, both modes): the GLOBAL Weather build hard-
