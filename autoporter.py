@@ -4658,9 +4658,17 @@ def patch_weather_region_check(build_root: Path) -> None:
     cert, stale digests; DSV lets it load); STORED libs stay 4096-aligned
     via _rewrite_apk_zip."""
     print("=== Patching Weather region check (global APK) ===")
-    apk = build_root / WEATHER_APK
-    if not apk.is_file():
-        print(f"  [missing, skip] {WEATHER_APK}\n")
+    # The port ships Weather under product/data-app (moved to app only by
+    # step 4h, AFTER this patch), so look in both places.
+    apk = None
+    for rel in (WEATHER_APK,
+                WEATHER_APK.replace("product/app/", "product/data-app/")):
+        cand = build_root / rel
+        if cand.is_file():
+            apk = cand
+            break
+    if apk is None:
+        print(f"  [missing, skip] {WEATHER_APK} (app/data-app)\n")
         return
     try:
         with zipfile.ZipFile(apk) as z:
