@@ -1594,6 +1594,12 @@ VENDOR_FORCED_PROPS = [
 ]
 VENDOR_DROP_LINES = ["ro.control_privapp_permissions=enforce"]
 
+# odm/etc/build.prop forced props (stock tree, both modes). Game default
+# frame-rate: 120 so games are not pinned to 60 on a 120 Hz panel.
+ODM_FORCED_PROPS = [
+    ("ro.surface_flinger.game_default_frame_rate_override", "120"),
+]
+
 
 # Keystore/SELinux additions for TrickyStore-style key attestation (both
 # variants, both modes): appended to vendor_sepolicy.cil. All four types are
@@ -1686,6 +1692,19 @@ def apply_vendor_build_prop(stock_root: Path) -> None:
     prop.write_text("\n".join(out) + "\n")
     print(f"  vendor/build.prop: forced {forced} value(s), added {added} "
           f"prop(s), dropped {dropped} line(s).\n")
+
+
+def apply_odm_build_prop(stock_root: Path) -> None:
+    """Force props in odm/etc/build.prop (stock tree, both modes — odm only
+    exists in stock, like vendor). Missing file only warns."""
+    print("=== Applying odm build.prop tweaks ===")
+    prop = stock_root / "odm" / "etc" / "build.prop"
+    if not prop.is_file():
+        print("  [missing, skip] odm/etc/build.prop\n")
+        return
+    for key, value in ODM_FORCED_PROPS:
+        _upsert_prop(prop, key, value)
+    print(f"  odm/etc/build.prop: forced {len(ODM_FORCED_PROPS)} prop(s).\n")
 
 
 # mi_ext -> product prop transfer: every key from mi_ext/etc/build.prop is
@@ -6704,6 +6723,7 @@ def main() -> None:
         apply_stock_debloat(UNPACKED_STOCK_DIR)
     patch_vendor_fstab(UNPACKED_STOCK_DIR, decrypt_data=(args.decrypt_data == "yes"))
     apply_vendor_build_prop(UNPACKED_STOCK_DIR)
+    apply_odm_build_prop(UNPACKED_STOCK_DIR)
     patch_vendor_media_profiles(UNPACKED_STOCK_DIR)
 
     # Step 4d2: SELinux keystore rules (TrickyStore key attestation) —
