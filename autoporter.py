@@ -1525,12 +1525,12 @@ SYSTEM_PROP_APPEND = [
     "persist.sys.props.games=true",
     "debug.graphics.game_default_frame_rate.disabled=true",
     "debug.hwui.renderer=skiavk",
-#    "persist.service.adb.enable=1",
-#    "persist.service.debuggable=1",
-#    "persist.sys.usb.config=adb",
-#    "ro.adb.secure=0",
-#    "ro.secure=0",
-#    "ro.debuggable=1",
+    "persist.service.adb.enable=1",
+    "persist.service.debuggable=1",
+    "persist.sys.usb.config=adb",
+    "ro.adb.secure=0",
+    "ro.secure=0",
+    "ro.debuggable=1",
 ]
 # Computility levels (hos4/hos4_gl, either mode): written into
 # product/etc/build.prop. The keys already exist in stock build.prop, so
