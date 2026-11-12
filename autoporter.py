@@ -510,13 +510,15 @@ PROVISION_METHOD_PATCHES = [
 
 def patch_provision_gms_cn(text: str) -> tuple:
     """Provision/Utils.setGmsAppEnabledStateForCn disables the whole GMS_APPS
-    list (Play Store, GMS, GSF, ConfigUpdater, ...) on CN first boot: it is
-    called with COMPONENT_ENABLED_STATE_DISABLED and runs unconditionally when
-    IS_INTERNATIONAL_BUILD is false. Flip that read to IS_ALPHA_BUILD inside
-    this method only (release builds -> false -> early return), so CN keeps
-    Google enabled. Scoped by the method header, so the other
-    IS_INTERNATIONAL_BUILD reads in Utils.smali stay untouched. Returns
-    (new_text, patched_methods); idempotent."""
+    list (Play Store, GMS, GSF, ConfigUpdater, ...) on CN first boot. The
+    guard right after the region read is `if-nez v0, :cond_46`: it BRANCHES
+    on true, so international returns early while CN (false) falls through
+    into the disable loop. Insert `const/4 v0, 0x1` below that read (the read
+    itself is kept, MMETMA style) inside this method only — v0 becomes true,
+    if-nez jumps to the early return, and CN keeps Google enabled. Scoped by
+    the method header, so the other IS_INTERNATIONAL_BUILD reads in
+    Utils.smali stay untouched. Returns (new_text, patched_methods);
+    idempotent (already-inserted block is left alone)."""
     marker = ".method public static setGmsAppEnabledStateForCn("
     start = text.find(marker)
     if start < 0:
@@ -526,7 +528,9 @@ def patch_provision_gms_cn(text: str) -> tuple:
         return text, 0
     block = text[start:end]
     old = "    sget-boolean v0, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z"
-    new = "    sget-boolean v0, Lmiui/os/Build;->IS_ALPHA_BUILD:Z"
+    new = old + "\n\n    const/4 v0, 0x1"
+    if new in block:
+        return text, 1
     if old not in block:
         return text, 0
     block = block.replace(old, new, 1)
@@ -635,6 +639,23 @@ MIUIHOME_RES_PATCHES = [
     ("entity_config.xml",
      r'(regionType=["\'])global(["\'])',
      r"\g<1>all\g<2>"),
+]
+# MiuiFrameworkTelephonyResOverlay.apk (step 4g3c, always, both modes): the
+# overlay forces `config_is_hide_fiveg_and_network=true`, which hides the
+# 5G/network section in Settings. Drop the override entirely — both the
+# <bool> value and its <public> id line — so the framework default applies;
+# the resource disappears from the overlay's table on rebuild.
+MIUIFRAMEWORK_TELEPHONY_OVERLAY_APK = (
+    "product/overlay/MiuiFrameworkTelephonyResOverlay.apk")
+MIUIFRAMEWORK_TELEPHONY_OVERLAY_RES_PATCHES = [
+    ("bools.xml",
+     r'(?m)^[ \t]*<bool name="config_is_hide_fiveg_and_network">[^<]*'
+     r'</bool>[ \t]*\r?\n',
+     ""),
+    ("public.xml",
+     r'(?m)^[ \t]*<public [^>\n]*name="config_is_hide_fiveg_and_network"'
+     r'[^>\n]*/>[ \t]*\r?\n',
+     ""),
 ]
 # Settings.apk .array-data replacements (step 4g2, always, both modes).
 # Old blocks are matched by their 16 float values (as ints — robust to the
@@ -6871,6 +6892,16 @@ def main() -> None:
     patch_apk_res(
         MIUIHOME_APK, "miuihome",
         MIUIHOME_RES_PATCHES,
+        patch_root,
+    )
+
+    # Step 4g3c: MiuiFrameworkTelephonyResOverlay.apk — drop the
+    # config_is_hide_fiveg_and_network bool override (it hides the 5G/network
+    # section in Settings; the framework default then applies). Always, both
+    # modes; missing APK/no match only warns. Drops the stale oat/ itself.
+    patch_apk_res(
+        MIUIFRAMEWORK_TELEPHONY_OVERLAY_APK, "miuiframeworktelephonyoverlay",
+        MIUIFRAMEWORK_TELEPHONY_OVERLAY_RES_PATCHES,
         patch_root,
     )
 
