@@ -6886,14 +6886,14 @@ def main() -> None:
         patch_root,
     )
 
-    # Step 4g3b: MiuiHome.apk res patch (regionType global -> all in
-    # res/xml/entity_config.xml — CTS entities on the shade are region-gated
-    # on CN builds). Always, both modes; missing APK/no match only warns.
-    patch_apk_res(
-        MIUIHOME_APK, "miuihome",
-        MIUIHOME_RES_PATCHES,
-        patch_root,
-    )
+    # Step 4g3b: MiuiHome.apk res patch (regionType global -> all) —
+    # DISABLED for now: the call is commented out, the rule constants stay
+    # (uncomment to re-enable). Always/both modes when enabled.
+    # patch_apk_res(
+    #     MIUIHOME_APK, "miuihome",
+    #     MIUIHOME_RES_PATCHES,
+    #     patch_root,
+    # )
 
     # Step 4g3c: MiuiFrameworkTelephonyResOverlay.apk — drop the
     # config_is_hide_fiveg_and_network bool override (it hides the 5G/network
