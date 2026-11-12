@@ -584,6 +584,15 @@ MIUISYSTEMUI_REPLACE_PATCHES = [
      "->IS_INTERNATIONAL_BUILD:Z\n\n"
      "    const/4 v0, 0x1"),
 ]
+# MIUISecurityAdd.apk (Game Turbo rich-web UI, step 4g2e, always, both
+# modes): the page loads from https://gamespace.sec.miui.com/, which answers
+# HTTP 503 outside CN (black screen after the intro), while the intl host
+# (gamespace.sec.intl.miui.com) answers 200 and renders. Repoint the literal
+# inside the dex only — resources/manifest stay stock.
+MIUISECURITYADD_APK = "product/app/MIUISecurityAdd/MIUISecurityAdd.apk"
+MIUISECURITYADD_STRING_PATCHES = [
+    ("gamespace.sec.miui.com", "gamespace.sec.intl.miui.com"),
+]
 # MIUIWeather.apk (step 4c2b, both modes): the GLOBAL Weather build hard-
 # exits on CN ROMs ("Region-ROM mismatch detected: region=global,
 # IS_INTERNATIONAL_BUILD=false. Exiting app."). The value comes through the
@@ -4943,6 +4952,106 @@ def patch_apk_smali_dexonly(apk_rel: str, tag: str, replace_patches,
     print()
 
 
+def patch_apk_dexonly_strings(apk_rel: str, tag: str, string_patches,
+                              build_root: Path) -> None:
+    """Rewrite literal strings inside an APK's dex files, resources untouched.
+
+    Selects every dex whose raw bytes contain one of the old strings,
+    baksmali/smali round-trips only those dexes, replaces the literals in the
+    decoded smali (const-string and friends), swaps the dex entries back into
+    the stock APK and re-applies the original signature (same plumbing as
+    patch_apk_smali_dexonly). Used to repoint CN-only endpoints, e.g.
+    MIUISecurityAdd's Game Turbo page (gamespace.sec.miui.com answers 503
+    outside CN, the intl host answers 200). Missing APK/no hit only warns."""
+    apk_path = build_root / apk_rel
+    if not apk_path.is_file():
+        print(f"WARNING: {apk_rel} not found, skip APK string patching.\n")
+        return
+    java = shutil.which("java")
+    if not java:
+        raise RuntimeError(
+            "java not found: install a JRE for baksmali/smali "
+            "(CI: default-jre-headless)")
+    baksmali_jar = TOOLS_DIR / "baksmali.jar"
+    smali_jar = TOOLS_DIR / "smali.jar"
+    for jar in (baksmali_jar, smali_jar):
+        if not jar.is_file():
+            raise RuntimeError(f"Missing tool jar: {jar}")
+    pairs = [(old, new) for old, new in string_patches if old != new]
+    if not pairs:
+        return
+    print(f"=== String-patching {apk_path.name} (dex-only) ===")
+
+    work_root = Path(tempfile.mkdtemp(prefix=f"dexstr-{tag}-"))
+    replacements = {}
+    try:
+        with zipfile.ZipFile(apk_path) as zin:
+            orig_entries = [i.filename for i in zin.infolist()]
+            dex_names = [n for n in orig_entries if n.endswith(".dex")]
+            for dex in dex_names:
+                blob = zin.read(dex)
+                if not any(old.encode() in blob for old, _new in pairs):
+                    continue
+                src = work_root / dex
+                src.write_bytes(blob)
+                api = detect_dex_api(src)
+                out_dir = work_root / (dex[:-len(".dex")] + "_smali")
+                run_logged([java, "-jar", str(baksmali_jar), "d", "--api",
+                            str(api), str(src), "-o", str(out_dir)],
+                           f"baksmali {dex}")
+                if not any(out_dir.rglob("*.smali")):
+                    raise RuntimeError(
+                        f"baksmali produced no smali for {dex}")
+                hits = 0
+                for path in out_dir.rglob("*.smali"):
+                    text = path.read_text()
+                    new_text = text
+                    for old, new in pairs:
+                        new_text = new_text.replace(old, new)
+                    if new_text != text:
+                        path.write_text(new_text)
+                        hits += sum(text.count(old) for old, _n in pairs)
+                if not hits:
+                    print(f"  [warn] {dex}: no string hit after decode")
+                    continue
+                print(f"  {dex}: {hits} string replacement(s)")
+                out_dex = work_root / (dex + ".new")
+                run_logged([java, "-jar", str(smali_jar), "a", "--api",
+                            str(api), str(out_dir), "-o", str(out_dex)],
+                           f"smali {dex}")
+                check_dex_blob(out_dex, f"smali {dex}")
+                before = count_dex_classes(java, baksmali_jar, src, api)
+                after = count_dex_classes(java, baksmali_jar, out_dex, api)
+                if after != before:
+                    raise RuntimeError(
+                        f"smali {dex}: class count changed {before} -> "
+                        f"{after}, refusing to pack a damaged dex")
+                replacements[dex] = out_dex.read_bytes()
+        if not replacements:
+            print(f"WARNING: no string hit in {apk_path.name}.\n")
+            return
+        tmp = apk_path.with_name(apk_path.name + ".new")
+        if tmp.exists():
+            tmp.unlink()
+        shutil.copy2(apk_path, tmp)
+        _apk_swap_entries(tmp, replacements)
+        with zipfile.ZipFile(tmp) as zout:
+            if {i.filename for i in zout.infolist()} != set(orig_entries):
+                raise RuntimeError(
+                    f"dex-only rebuild changed the entry set of "
+                    f"{apk_path.name}")
+        _validate_apk_dexes(tmp)
+        _apply_build_signature(apk_path, tmp)
+        os.replace(tmp, apk_path)
+        print(f"APK string patching done: {apk_path.name} "
+              f"({apk_path.stat().st_size} bytes, {len(orig_entries)} "
+              f"entries; dex rebuilt: {', '.join(sorted(replacements))}).\n")
+    finally:
+        shutil.rmtree(work_root, ignore_errors=True)
+    drop_oat_next_to(apk_path, "patched")
+    print()
+
+
 # Linker-required value fixups for the apktool path (applied to the
 # decoded tree before rules): stock ships raw strings where aapt2 demands
 # typed references. Each swap is semantically identical (boolean true ==
@@ -6896,6 +7005,16 @@ def main() -> None:
     patch_apk_smali_dexonly(
         MIUISYSTEMUI_APK, "miuisystemui",
         MIUISYSTEMUI_REPLACE_PATCHES,
+        patch_root,
+    )
+
+    # Step 4g2e: MIUISecurityAdd.apk (Game Turbo) — the rich-web page loads
+    # from gamespace.sec.miui.com (HTTP 503 outside CN -> black screen after
+    # the intro); repoint it to the intl host in dex only. Always, both
+    # modes; missing APK/no hit only warns.
+    patch_apk_dexonly_strings(
+        MIUISECURITYADD_APK, "miuisecurityadd",
+        MIUISECURITYADD_STRING_PATCHES,
         patch_root,
     )
 
