@@ -1875,8 +1875,11 @@ DEBLOAT_HOS4: List[str] = [
     "product/app/HybridPlatform",
     # CN gallery plugin: the global build (com.hyper.gallery.plugin) is
     # supplied by the mod set in its OWN folder — this CN copy must go, or
-    # the scanner sees two APKs with the same package name.
+    # the scanner sees two APKs with the same package name. The port ships
+    # it under product/data-app (moved to product/app only by step 4h,
+    # AFTER debloat), so list both paths; a missing one only warns.
     "product/app/HyperGalleryPluginCn",
+    "product/data-app/HyperGalleryPluginCn",
     "product/app/MiBugReportOS4",
     "product/app/MINextpay",
     "product/app/MIS",
