@@ -851,18 +851,11 @@ SETTINGS_TEMPLATE_FACTORY_OLD = (
     "Fragment$$ExternalSyntheticBUOutline0;->m(Ljava/lang/String;"
     "Ljava/lang/Object;Ljava/lang/Object;)V")
 SETTINGS_TEMPLATE_FACTORY_NEW = "    nop"
-# KeySettings (power-button function list): on CN the Google-assistant entry
-# is removed unconditionally and the XiaoAI entry kept; force the global
-# branch so the Google option stays visible/selectable on CN too. On global
-# the register is already true, so this is a behavioral no-op there. The
-# `v4` form is unique (the other IS_GLOBAL_BUILD read is `v0`), and the
-# const-string right after pins the exact block (the function-list builder).
-SETTINGS_KEY_POWER_GLOBAL_OLD = (
-    "    sget-boolean v4, Lmiui/os/Build;->IS_GLOBAL_BUILD:Z\n\n"
-    "    const-string v5, \"launch_voice_assistant\"")
-SETTINGS_KEY_POWER_GLOBAL_NEW = (
-    "    const/4 v4, 0x1\n\n"
-    "    const-string v5, \"launch_voice_assistant\"")
+# (removed) KeySettings IS_GLOBAL_BUILD -> 1 patch: the power-button function
+# list is NOT drawn by com.android.settings. It comes from the framework
+# (MiInputShortcutFeature -> ShortcutFunctionManager, patched in 4f2) and the
+# UI lives in com.miui.securitycore (GestureShortcutActivity), so changing
+# this fragment had no effect. Kept as a note, not applied.
 # MIUI14 INDEX_MAP (DeviceBasicInfoPresenter$1) reorder: Screen size (logical
 # 3) next to CPU, RAM (logical 5) next to Resolution. The 5->3 and 7->6 puts
 # share the same register line ({p0, v0, v2}); patch only the first one.
@@ -1538,6 +1531,10 @@ FPS_FIX_SCRIPT = """#!/system/bin/sh
 settings delete system thermal_limit_refresh_rate >/dev/null 2>&1
 """
 GEMINI_FIX_SCRIPT_REL = "system/system/bin/geminifix.sh"
+# DISABLED (not applied in apply_init_rc_tweak): the PermissionController
+# role picker ("Default digital assistant app") writes BOTH settings below
+# when the user selects Google, so a normal setup needs no seeding. Kept for
+# a fresh-data-partition scenario where the picker is never opened.
 # The assistant is two settings, and BOTH must name GSA: `assistant` is the
 # component SystemUI asks for, `voice_interaction_service` is what makes the
 # VoiceInteractionManager bind it. With only `assistant` set, SystemUI's
@@ -3254,11 +3251,16 @@ def apply_init_rc_tweak(build_root: Path) -> None:
             text += "\n"
         text += "\n".join(INIT_RC_APPEND) + "\n"
         changed = True
-    if INIT_RC_GEMINI_GUARD not in text:
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
-        changed = True
+    # geminifix is DISABLED: the PermissionController role picker
+    # ("Default digital assistant app") writes BOTH Settings.Secure.assistant
+    # and voice_interaction_service when the user selects Google, so the
+    # seeding is not needed. Re-enable by uncommenting this block and the
+    # script entry in the write loop below.
+    # if INIT_RC_GEMINI_GUARD not in text:
+    #     if text and not text.endswith("\n"):
+    #         text += "\n"
+    #     text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
+    #     changed = True
     # kashi v4.0 FPS patcher: clear a refresh-rate cap stored before the
     # PowerKeeper patch (independent guard).
     if INIT_RC_FPS_GUARD not in text:
@@ -3267,8 +3269,8 @@ def apply_init_rc_tweak(build_root: Path) -> None:
         text += "\n".join(INIT_RC_FPS_APPEND) + "\n"
         changed = True
     # The scripts are written even when the rc blocks already exist (re-runs).
-    for rel, body in ((FPS_FIX_SCRIPT_REL, FPS_FIX_SCRIPT),
-                      (GEMINI_FIX_SCRIPT_REL, GEMINI_FIX_SCRIPT)):
+    # geminifix.sh is disabled together with its init.rc block above.
+    for rel, body in ((FPS_FIX_SCRIPT_REL, FPS_FIX_SCRIPT),):
         script = build_root / rel
         if not script.is_file():
             script.parent.mkdir(parents=True, exist_ok=True)
@@ -3279,7 +3281,7 @@ def apply_init_rc_tweak(build_root: Path) -> None:
         print(f"  already present, skip {INIT_RC}\n")
         return
     rc.write_text(text)
-    print(f"  appended animationfix/geminifix/fpsfix blocks to {INIT_RC}")
+    print(f"  appended animationfix/fpsfix blocks to {INIT_RC}")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
@@ -7073,9 +7075,6 @@ def main() -> None:
         + [(["MiuiMyDeviceDetailSettings.smali"],
             SETTINGS_ALL_SPECS_INTL_OLD,
             SETTINGS_ALL_SPECS_INTL_NEW)]
-        + [(["KeySettings.smali"],
-            SETTINGS_KEY_POWER_GLOBAL_OLD,
-            SETTINGS_KEY_POWER_GLOBAL_NEW)]
         + [(["MiuiMyDeviceSettings.smali"],
             SETTINGS_DEVICE_PARAMS_TEMPLATE_OLD,
             SETTINGS_DEVICE_PARAMS_TEMPLATE_NEW)]
