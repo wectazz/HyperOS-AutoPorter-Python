@@ -511,6 +511,137 @@ DRM_BROADCAST_OLD = (
 MIUI_SERVICES_DRM_REPLACE_PATCHES = [
     (["ActivityManagerServiceImpl.smali"], DRM_BROADCAST_OLD, ""),
 ]
+# Voice assistant background start (step 4f, miui-services.jar, both modes,
+# functional — NOT dsv-gated). HyperOS blocks Activity starts from the
+# background for non-system packages (MIUIOP 10021); a third-party assistant
+# (Claude, /data/app) is not exempt, so its VoiceInteractionSession cannot
+# show its overlay when the app is not in the foreground ("session starts,
+# immediately unbinds"). The check lives in
+# com.android.server.wm.ActivityStarterImpl.isAllowedStartActivity (two
+# overloads; both test 0x2725 = 10021 right before
+# AppOpsManager.checkOpNoThrow). Both checks are routed through a helper that
+# returns MODE_ALLOWED (0) when the calling package is the current assistant
+# (Settings.Secure.voice_interaction_service or assistant starts with
+# "<pkg>/"), and runs the real check otherwise. GSA is a system package and
+# exempt by MIUI anyway; this only restores standard behavior for user apps.
+# The second site passes v0 as "this" (the prologue moved it there; p0 is
+# v26 in that 36-register method and does not fit an invoke register list).
+# Verified on device with a KernelSU module: 10021=ignore, long-press from
+# the launcher opens Claude's overlay.
+VOICE_BGSTART_SITE1 = (
+    "    invoke-virtual {v0, v5, p1, p3}, Landroid/app/AppOpsManager;->checkOpNoThrow(IILjava/lang/String;)I\n"
+)
+VOICE_BGSTART_SITE1_NEW = (
+    "    invoke-direct {p0, v0, v5, p1, p3}, Lcom/android/server/wm/ActivityStarterImpl;->checkOpAllowAssistant(Landroid/app/AppOpsManager;IILjava/lang/String;)I\n"
+)
+VOICE_BGSTART_SITE2 = (
+    "    invoke-virtual {v3, v4, v10, v2}, Landroid/app/AppOpsManager;->checkOpNoThrow(IILjava/lang/String;)I\n"
+)
+VOICE_BGSTART_SITE2_NEW = (
+    "    invoke-direct {v0, v3, v4, v10, v2}, Lcom/android/server/wm/ActivityStarterImpl;->checkOpAllowAssistant(Landroid/app/AppOpsManager;IILjava/lang/String;)I\n"
+)
+VOICE_BGSTART_HELPERS = """
+.method private checkOpAllowAssistant(Landroid/app/AppOpsManager;IILjava/lang/String;)I
+    .registers 6
+
+    invoke-direct {p0, p4}, Lcom/android/server/wm/ActivityStarterImpl;->isCurrentAssistantPackage(Ljava/lang/String;)Z
+    move-result v0
+
+    if-eqz v0, :cond_check
+
+    const/4 v0, 0x0
+    return v0
+
+    :cond_check
+    invoke-virtual {p1, p2, p3, p4}, Landroid/app/AppOpsManager;->checkOpNoThrow(IILjava/lang/String;)I
+    move-result v0
+    return v0
+.end method
+
+.method private isCurrentAssistantPackage(Ljava/lang/String;)Z
+    .registers 5
+
+    if-eqz p1, :cond_false
+
+    iget-object v0, p0, Lcom/android/server/wm/ActivityStarterImpl;->mContext:Landroid/content/Context;
+    if-nez v0, :cond_ctx
+
+    const/4 v0, 0x0
+    return v0
+
+    :cond_ctx
+    invoke-virtual {v0}, Landroid/content/Context;->getContentResolver()Landroid/content/ContentResolver;
+    move-result-object v0
+
+    const-string v1, "voice_interaction_service"
+    invoke-static {v0, v1}, Landroid/provider/Settings$Secure;->getString(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v1
+    invoke-direct {p0, v1, p1}, Lcom/android/server/wm/ActivityStarterImpl;->matchesPackage(Ljava/lang/String;Ljava/lang/String;)Z
+    move-result v2
+    if-eqz v2, :cond_assistant
+
+    const/4 v0, 0x1
+    return v0
+
+    :cond_assistant
+    const-string v1, "assistant"
+    invoke-static {v0, v1}, Landroid/provider/Settings$Secure;->getString(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v1
+    invoke-direct {p0, v1, p1}, Lcom/android/server/wm/ActivityStarterImpl;->matchesPackage(Ljava/lang/String;Ljava/lang/String;)Z
+    move-result v1
+    if-eqz v1, :cond_false
+
+    const/4 v0, 0x1
+    return v0
+
+    :cond_false
+    const/4 v0, 0x0
+    return v0
+.end method
+
+.method private matchesPackage(Ljava/lang/String;Ljava/lang/String;)Z
+    .registers 5
+
+    if-eqz p1, :cond_false
+    if-eqz p2, :cond_false
+
+    new-instance v0, Ljava/lang/StringBuilder;
+    invoke-direct {v0}, Ljava/lang/StringBuilder;-><init>()V
+    invoke-virtual {v0, p2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    const-string v1, "/"
+    invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+    invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+    move-result-object v0
+
+    invoke-virtual {p1, v0}, Ljava/lang/String;->startsWith(Ljava/lang/String;)Z
+    move-result v1
+    if-eqz v1, :cond_false
+
+    const/4 v0, 0x1
+    return v0
+
+    :cond_false
+    const/4 v0, 0x0
+    return v0
+.end method
+"""
+
+
+def patch_voice_bgstart(text: str) -> tuple:
+    """ActivityStarterImpl: route both MIUIOP 10021 checks through
+    checkOpAllowAssistant so the current assistant package can start its
+    overlay from the background. Idempotent (helper marker); returns
+    (text, 0) when the build's register allocation differs (warn-skip)."""
+    if "checkOpAllowAssistant" in text:
+        return text, 1  # already patched
+    if (text.count(VOICE_BGSTART_SITE1) != 1
+            or text.count(VOICE_BGSTART_SITE2) != 1):
+        return text, 0
+    text = text.replace(VOICE_BGSTART_SITE1, VOICE_BGSTART_SITE1_NEW, 1)
+    text = text.replace(VOICE_BGSTART_SITE2, VOICE_BGSTART_SITE2_NEW, 1)
+    if not text.endswith("\n"):
+        text += "\n"
+    return text + VOICE_BGSTART_HELPERS, 1
 # Fullscreen-AOD catch patch (step 4f, miui-services.jar only, gated by
 # --aod-fullscreen like the duchamp.xml flag — NOT dsv-gated, it's
 # functional). Tuples: (target basenames, previous exception, anchor
@@ -7005,6 +7136,8 @@ def main() -> None:
         + keyboard_replace_rules(["InputMethodManagerServiceImpl.smali"])
         + MIUI_SERVICES_DRM_REPLACE_PATCHES,
         catch_patches=aod_catch,
+        # Background activity start for third-party assistants (MIUIOP 10021).
+        method_funcs=[(["ActivityStarterImpl.smali"], patch_voice_bgstart)],
     )
     # Step 4f2: Smali-patch miui-framework.jar (keyboard strings + the
     # shortcut region gate). Always, both modes.
