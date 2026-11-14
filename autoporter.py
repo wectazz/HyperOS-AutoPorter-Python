@@ -1174,23 +1174,24 @@ KASHI_PRESENTER_NEW = (
 )
 
 # Settings.apk kashi "About phone" page merge (always, both modes — the
-# reference is the hand-patched warhol Settings): 17 committed files under
-# kashi_settings/ (10 smali into the classes12 dex, 6 new res incl. 2 PNGs,
-# miui_version_card.xml as a full replacement; public.xml is deliberately
-# NOT carried — the rebuild reassigns IDs), wiring edits in 3 device cards
-# + DeviceBasicInfoPresenter.getLineNum() + MiuiSettings ALPHA swaps +
-# res appends. Validated against the warhol base only: PORT_URL must be
-# that firmware, otherwise anchors warn-skip and the merge must be
-# re-diffed. Matching resource IDs in the copied smali are proven only by
+# reference is the mods_center build): 21 committed files under
+# kashi_settings/ (13 obfuscated smali into the classes12 dex, 5 new res +
+# 3 layout replacements; public.xml is deliberately NOT carried — the
+# rebuild reassigns IDs), wiring edits in 3 device cards +
+# DeviceBasicInfoPresenter.getLineNum() + res appends. The kashi classes
+# resolve every resource by NAME at runtime (Resources.getIdentifier), so
+# aapt2 auto-assigned IDs are safe. Validated against the chagall port
+# stock: PORT_URL must be that firmware, otherwise anchors warn-skip and
+# the merge must be re-diffed. Matching resource names are proven only by
 # the on-device About-page render, never by the build going green.
 KASHI_DIR = BASE_DIR / "kashi_settings"
 # Basenames that may legitimately appear in the rebuilt APK (new kashi
-# resources — layouts/drawables stay individual entries, PNGs too);
+# resources — layouts/drawables stay individual entries);
 # anything else in the entry-set diff still fails fast.
 KASHI_EXPECTED_NEW_ENTRIES = frozenset({
-    "version_card_img_dark.png", "version_card_img_light.png",
+    "ic_device_oos_bg.xml", "ic_device_oos_inner.xml",
+    "oos_progress_drawable.xml",
     "device_info_item_kashi.xml", "storage_info_item_kashi.xml",
-    "ic_device_name_info.xml", "storage_progress_drawable.xml",
 })
 # Literal exact-once smali block replaces for the kashi wiring:
 # (target basenames, old, new). Applied when old occurs exactly once;
@@ -1203,22 +1204,9 @@ KASHI_CARD_REPLACE = [
      "    .line 102\n",
      "    invoke-virtual {p0}, Lcom/android/settings/device/MiuiVersionCard;->refreshVersionName()V\n"
      "\n"
-     "    invoke-static {p0}, Lcom/android/settings/kashi/Utils;->setVersionCardBgElement(Lcom/android/settings/device/MiuiVersionCard;)V\n"
+     "    invoke-static {p0}, Lcom/android/settings/kashi/Utils;->setBlurCardElement(Lcom/android/settings/device/MiuiVersionCard;)V\n"
      "\n"
      "    .line 102\n"),
-    (["MiuiVersionCard.smali"],
-     "    invoke-static {}, Lcom/android/settings/MiuiUtils;->isLiteOrLowDevice()Z\n"
-     "\n"
-     "    move-result v0\n"
-     "\n"
-     "    if-nez v0, :cond_2\n",
-     "    invoke-static {}, Lcom/android/settings/MiuiUtils;->isLiteOrLowDevice()Z\n"
-     "\n"
-     "    move-result v0\n"
-     "\n"
-     "    const/4 v0, 0x0\n"
-     "\n"
-     "    if-nez v0, :cond_2\n"),
     (["MiuiMemoryCard.smali"],
      "    const/4 v2, 0x1\n"
      "\n"
@@ -1242,125 +1230,22 @@ KASHI_CARD_REPLACE = [
      "\n"
      "    invoke-virtual {v0, v1, p0, v2}, Landroid/view/LayoutInflater;->inflate(ILandroid/view/ViewGroup;Z)Landroid/view/View;\n"),
 ]
-# MiuiSettings ALPHA swaps (IS_INTERNATIONAL_BUILD -> IS_ALPHA_BUILD at the
-# reference sites only — the other 8 occurrences in the file stay): each
-# old block carries its R$id context, so same-shaped blocks for other
-# preferences never match.
-KASHI_ALPHA_REPLACE = [
-    (["MiuiSettings.smali"],
-     "    sget-boolean p2, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n",
-     "    sget-boolean p2, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"),
-    (["MiuiSettings.smali"],
-     "    sget-boolean v10, Lcom/android/settings/utils/SettingsFeatures;->IS_NEED_REMOVE_THEME:Z\n"
-     "\n"
-     "    if-nez v10, :cond_b\n"
-     "\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
-     "\n"
-     "    if-eqz v10, :cond_b\n",
-     "    sget-boolean v10, Lcom/android/settings/utils/SettingsFeatures;->IS_NEED_REMOVE_THEME:Z\n"
-     "\n"
-     "    if-nez v10, :cond_b\n"
-     "\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
-     "\n"
-     "    if-eqz v10, :cond_b\n"),
-    (["MiuiSettings.smali"],
-     "    sget v10, Lcom/android/settings/R$id;->wallpaper_settings:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_a\n"
-     "\n"
-     "    if-nez v3, :cond_8\n"
-     "\n"
-     "    .line 1051\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
-     "\n"
-     "    if-eqz v10, :cond_8\n",
-     "    sget v10, Lcom/android/settings/R$id;->wallpaper_settings:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_a\n"
-     "\n"
-     "    if-nez v3, :cond_8\n"
-     "\n"
-     "    .line 1051\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
-     "\n"
-     "    if-eqz v10, :cond_8\n"),
-    (["MiuiSettings.smali"],
-     "    sget v10, Lcom/android/settings/R$id;->security_status:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_15\n"
-     "\n"
-     "    .line 1085\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
-     "\n"
-     "    if-nez v10, :cond_14\n",
-     "    sget v10, Lcom/android/settings/R$id;->security_status:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_15\n"
-     "\n"
-     "    .line 1085\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
-     "\n"
-     "    if-nez v10, :cond_14\n"),
-    (["MiuiSettings.smali"],
-     "    sget v10, Lcom/android/settings/R$id;->privacy_protection_settings:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_36\n"
-     "\n"
-     "    .line 1206\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
-     "\n"
-     "    if-nez v10, :cond_35\n",
-     "    sget v10, Lcom/android/settings/R$id;->privacy_protection_settings:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_36\n"
-     "\n"
-     "    .line 1206\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
-     "\n"
-     "    if-nez v10, :cond_35\n"),
-    (["MiuiSettings.smali"],
-     "    sget v10, Lcom/android/settings/R$id;->personalize_title:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_38\n"
-     "\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z\n"
-     "\n"
-     "    if-nez v10, :cond_37\n",
-     "    sget v10, Lcom/android/settings/R$id;->personalize_title:I\n"
-     "\n"
-     "    if-ne v9, v10, :cond_38\n"
-     "\n"
-     "    sget-boolean v10, Lmiui/os/Build;->IS_ALPHA_BUILD:Z\n"
-     "\n"
-     "    if-nez v10, :cond_37\n"),
-    (["MiuiSettings.smali"],
-     "    sget-boolean v10, Lmiui/os/Build;->IS_GLOBAL_BUILD:Z\n"
-     "\n"
-     "    if-nez v10, :cond_44\n",
-     "    sget-boolean v10, Lmiui/os/Build;->IS_GLOBAL_BUILD:Z\n"
-     "\n"
-     "    const/4 v10, 0x0\n"
-     "\n"
-     "    if-nez v10, :cond_44\n"),
-]
 # Resource appends (glob, full lines incl. indent): inserted before
 # </resources> when the name="..." is absent (order is irrelevant —
 # aapt sorts the table, so appended position never affects IDs).
 KASHI_RES_APPENDS = [
     ("values/colors.xml", [
-        '    <color name="bw">#ff000000</color>',
-        '    <color name="storage_progress_bg">#11000000</color>',
+        '    <color name="oos_blue_tint_color">#ff2144bf</color>',
     ]),
     ("values-night/colors.xml", [
-        '    <color name="bw">#ffffff</color>',
-        '    <color name="storage_progress_bg">#33ffffff</color>',
+        '    <color name="oos_blue_tint_color">#ff0d84ff</color>',
     ]),
     ("values/ids.xml", [
         '    <id name="storage_progress_kchi" />',
-        '    <id name="device_info_version_card_bg" />',
         '    <id name="device_name_in_banner" />',
+        '    <id name="build_dev_info" />',
+        '    <id name="device_info_wallpaper_blur_bg" />',
+        '    <id name="about_phone_rom_name_info" />',
     ]),
 ]
 
@@ -1389,8 +1274,8 @@ def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
     """Merge the committed kashi_settings/ overlay into an apktool-decoded
     Settings tree: new smali into the classes12 dex dir (located by its
     vendor/.../misys content), new/overwritten res into res/ (public.xml
-    is deliberately NOT carried — the rebuild reassigns IDs), wiring +
-    ALPHA smali block replaces (exact-once or warn-skip), and res appends.
+    is deliberately NOT carried — the rebuild reassigns IDs), wiring
+    smali block replaces (exact-once or warn-skip), and res appends.
     Missing sources only warn."""
     if not KASHI_DIR.is_dir():
         print(f"  [warn] kashi overlay not found: {KASHI_DIR}, skip")
@@ -1411,26 +1296,6 @@ def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
             shutil.copy2(src, dest)
             copied += 1
         print(f"  copied {copied} kashi smali files into {dex_target.name}/")
-        # The ALPHA block below swaps IS_INTERNATIONAL_BUILD for a field
-        # that may be unreferenced in this dex (IS_ALPHA_BUILD). classes2
-        # sits exactly at the dex field limit on some builds (65536 ids =
-        # indices 0..65535), so one more field overflows the 16-bit field
-        # index and smali dies mid-write, leaving a truncated classes2.dex
-        # with a zeroed header (device: ClassNotFoundException for
-        # com.android.settings.SettingsApplication). Host MiuiSettings in
-        # the kashi dex instead (usually classes12 — small, with headroom
-        # in every pool); ART loads all classes*.dex alike.
-        for src_dir in dex_dirs:
-            src = src_dir / "com/android/settings/MiuiSettings.smali"
-            if not src.is_file():
-                continue
-            dst = dex_target / "com/android/settings/MiuiSettings.smali"
-            if src != dst:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(src), str(dst))
-                print(f"  moved MiuiSettings.smali {src_dir.name}/ -> "
-                      f"{dex_target.name}/ (dex field-limit headroom)")
-            break
     # 2. new/overwritten res into res/ (miui_version_card.xml included:
     # full replacement rides the same overwrite copy)
     res_root = work_root / "res"
@@ -1443,24 +1308,14 @@ def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
         for src in sorted(res_src.rglob("*")):
             if src.is_dir() or src.is_symlink() or not src.is_file():
                 continue
-            # kashi_public.xml (ID pinning) is deliberately NOT carried:
-            # pinned IDs clash with the stock table whenever the port
-            # firmware changes (aapt2: "entry ID is already assigned",
-            # proven on chagall 4.0.0.11). The stock public.xml keeps every
-            # stock ID pinned (R-class consts in the dex stay valid) and
-            # aapt2 auto-assigns the new kashi resources into free slots —
-            # no smali in the overlay hardcodes 0x7f values, so any
-            # assignment works.
-            if src.name == "kashi_public.xml":
-                continue
             dest = res_root / src.relative_to(res_src)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
             copied += 1
         print(f"  copied {copied} kashi res files into res/ "
               f"(kashi IDs auto-assigned)")
-    # 3. wiring + ALPHA + Presenter smali block replaces (exact-once).
-    for basenames, old, new in KASHI_CARD_REPLACE + KASHI_ALPHA_REPLACE + [
+    # 3. wiring + Presenter smali block replaces (exact-once).
+    for basenames, old, new in KASHI_CARD_REPLACE + [
             (["DeviceBasicInfoPresenter.smali"],
              KASHI_PRESENTER_OLD, KASHI_PRESENTER_NEW)]:
         for base_name in basenames:

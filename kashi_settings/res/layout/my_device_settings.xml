@@ -4,7 +4,7 @@
     <miuix.springback.view.SpringBackLayout android:id="@id/springview" android:layout_width="match_parent" android:layout_height="match_parent" app:scrollableView="@id/scrollview">
         <miuix.core.widget.NestedScrollView android:id="@id/scrollview" android:clipToPadding="false" android:layout_width="match_parent" android:layout_height="match_parent">
             <LinearLayout android:orientation="vertical" android:id="@id/scroll_layout" android:layout_width="match_parent" android:layout_height="wrap_content">
-                <View android:id="@id/version_card_click_view" android:layout_width="match_parent" android:layout_height="238.0dp" />
+                <View android:id="@id/version_card_click_view" android:layout_width="match_parent" android:layout_height="178.0dp" />
                 <include layout="@layout/device_layout" />
                 <RelativeLayout android:id="@id/device_params" android:background="@drawable/new_device_card_back_ground" android:paddingTop="16.0dp" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/my_device_card_margin_edge" android:layout_marginStart="@dimen/card_margin_edge" android:layout_marginEnd="@dimen/card_margin_edge">
                     <androidx.recyclerview.widget.RecyclerView android:id="@id/description_grid" android:layout_width="match_parent" android:layout_height="wrap_content" android:overScrollMode="never" android:paddingStart="@dimen/preference_item_padding_os2" android:paddingEnd="@dimen/preference_item_padding_os2" android:nestedScrollingEnabled="false" />

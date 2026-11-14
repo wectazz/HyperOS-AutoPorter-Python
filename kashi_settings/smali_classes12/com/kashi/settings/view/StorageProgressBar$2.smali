@@ -22,13 +22,13 @@
 
 # direct methods
 .method static constructor <clinit>()V
-    .locals 52
+    .registers 52
 
     return-void
 .end method
 
 .method constructor <init>(Lcom/kashi/settings/view/StorageProgressBar;)V
-    .locals 51
+    .registers 53
 
     move-object/from16 v1, p1
 
@@ -41,72 +41,72 @@
     return-void
 .end method
 
-.method public static ţ̷̶̢̛͇̼̱̠͚̗̤̜̭̫͓̗̭̌̑̽̂̿̋͑͐̆̏́̉͂̏̈́͘̚͜͝͝͠o̷̼c̸̭̫̄̏͘nt̴̾ṉ̢̧̛̟̦̗͈͙͈̟̗̀̈́̈́̂̿͑͘̕ő̮͑̎͌͘͝K̸̖̋̌k̋ṯ̸͜p̋̈́͌͘͝k͉͖̀͊́P̦͎̤̦̻̻͎͉̥̜̥͌̂̈́̅̄̾̐́̑͗͠͝͝ͅä̯k̷̶̡̛͓̂́P̧̲̝̹̈͌ô̶̸̢̡͈͚̹̺̱̥͓̫̦͎̰̺̹̮̗̲̱̎̃̈͂͒̏͘̚͘͘̕͝͠a̛͈͎̫͒̇̋ȩB̪͐c̴̢̤̗̑ȩ̴̪̂́ȁ͠c͚̺P̷̵̧̤̻͚̙̱̭̈̋̃̋̌̈͗̐͜ͅḽ̙̦̚k̷̵̞̭̯̟̯͉̄̈̂͂͂ç̬̹͎̗͚̂̅͗̀͠t̺̪̫̋̐ô̵̱̹̜̘̞̙̤͚͌͐́̿̑͒̋̋͒̏͆͌͘͜(Ljava/lang/Object;)Lcom/kashi/settings/view/StorageProgressBar;
-    .locals 2
+.method public static c̥̫̙͋̂̆̉̽̋́̆ư̶̸̸̹͈͚̮̫̯͈͉͕̐͊̑̿̆̌̄̾͌͠k̵̶̸̢̩̗̯͈̺͎̹̱͕͊̃̏͌̂̃̅̒͆͘̚̕͘͝͝ţ̶̷̶̶͚̟̹̺̹̼̦̥͉͚̱͕̫̫͌͋̐̋͑̃̂͑̾̄͆͑̍̓̌͜͝͝ͅͅä̲̺͎̠̈́̂̾̋͘͝͝cǒ̢̙͙̈́͘͘͠ǫ̢̫͌̌̀͜͝͝â̵̢̢̛̘̼̗̖͖̫̱̺̘͕̗̂̋̾͑͋̈͆̀̾͐͑ņ̸̵̛̜̫̰̭͕͇̖̪͚͈͉̬̥͎̦̙̩̼͎̫̙̮̤͊͌̈͐̈́̐̌̆͊̂͗̔̎͐̅̇̎̌̔̈́̄͒̽̈͘͝͝ͅŭ̷̸͖̭̦̯̘͚̗̻͙̿͊͋̇̚͜͜K̨̈́́̉́k̛̝̈̈́͂̎̀̃͝c̔͗̓K̫̫̂͋͐͜͠c̸̷̸̵̸͉̫̬̫̫̮̋͐̀̄͋̋̎̿̋͗̂͊̂̍͐̅͗͝(Ljava/lang/Object;)Lcom/kashi/settings/view/StorageProgressBar;
+    .registers 3
 
-    invoke-static {}, Lcom/kashi/settings/view/AboutSettingsHelper$3;->ţ̴̶̹̖͉̭̔̂͌̈̑͒͐̚͘͝Ḃ̸̛̪̮̜̖̖͗̋̍̽̀̎̑͌͘ͅu͚͐̈̃ư̶͈̙̥͎̭͓͇̹̫̮͉͚̍̆̌͌͗̿̈́̈͗̀̾́̉͌͋͋͜e̸̷̸̢̢̘̙͎̩̦̭͕͕͕͑̑̀̂̔̀̃̎̚ě̶̮̗̝̗͈̓̃̈́̂̀̈͌̔͌̌͋͝ţ̸̵̸͈͎̱̫̝̦̹͎͇͎̱̲̫̼̱̹̘͓̲͈̋̐̿͋̃͌̈́͂̃̏̌̇̿̓̿͋̋͋̋̃͋̑͘̚͜ͅţ̴̢̗͎̯̩̰͌̽͒͐͑͌ö̸̯̘̗́͂̆͋͒̌a̛̖͓̋͂̏̈́̑̍̈́̌͜͜͝K̋̆ơ̴̪̝͉̿̉͗͂̂̂̈́͘͝B̥̹̺͕͈̿̏̔͋̆͘͝ö̵̞̹̺̺̼̖̫̖͕͈̙̽̂̌̃̃͑͘͜͝l̀ő̶͓̲̀ǒ̜̥͓͈̈́͌h̢̢̙̑͜t̪̲͓͖̑̃̕a͗u̹̗͝()I
+    invoke-static {}, Lcom/kashi/settings/view/AboutPhoneUIHelper$2;->h̵̷̴̵̭̥̫͙̯̰̺̭̗̲͓͕͆̽̋̍͂͗̎͜͝͝ǎ̧̮͈̘̏̿͗̈́̈͊͜ã̛̠̪̫͓̤̺̭̫͚̞̙͌̂̚͜͜͝na̪͚͙̐̂̑̃̄͜uo̧̞̎ĉ̶̶̸̨̯̲͈̫̤̜̯̦͈̩̲͈̯̗͉̺͎̐̂͌̒̒̈̀̏̄̅̋̌͒̑̄̔̎̈́̑̅̈́̌͘̚̕͝͝ͅt̢͓̘͕͉̝̦̹̐̌c̃͗͐̿ç̷̢̧̹̫͈͈̫̭̭͂̉K̾ç̗̋̋k̡̫̎̋͝K̴͓̅̂ȯ̫̗́̿̆Ba̛̹̗͗̅͜K̅ǎ̸̴̴̶̶̧̼̦̝̱̟̺̯̥̫͖͕͓̪͌͐̋̑͑̈͋̀̎̌̑̂̑̌̃͗͗h̖̅͒̔o̲̬͘ķ̴̸̶̶̨̢̥͈̗̫̤͕̙̯̰͕͙̟̞̙̮͎̩̯͎̮̜͓̱͈̤̺̩͈̍̈́́͑̆͋̿͋͋̈́̈͆̌̅̈́͜͜͝͝͝ā͓̏́()I
 
     move-result v0
 
-    if-gez v0, :cond_0
+    if-gez v0, :cond_b
 
     check-cast p0, Lcom/kashi/settings/view/StorageProgressBar$2;
 
     iget-object v1, p0, Lcom/kashi/settings/view/StorageProgressBar$2;->this$0:Lcom/kashi/settings/view/StorageProgressBar;
 
-    :goto_0
+    :goto_a
     return-object v1
 
-    :cond_0
+    :cond_b
     const v1, 0x0
 
-    goto :goto_0
+    goto :goto_a
 .end method
 
-.method public static t͎́̀͜͝ë̸͇̿P̴̨̝̰͉̅̑̂̈̈͘͜k̨̺̃̋c̏ļ̵͈̻͉̞̯̹̘̲̫͙͇͚͎͗͂̽̿͒̂̋͗̿͝P̴̺̪̦̗̘͈͑̾̂͗͝ṳ̦̟͎̈́̾̌͘͝p͑̚t̫̥̖̯͚̑̊͘ȃ̲̦̘̋̈́͠P̵̨̫̮̫̒͋͗̑̂͌̏͗̈́̾t̵̰̼̎̌͠ņ̴̛̛̱̝̹͉̦͉̗̞̏̑̏̅̈́̈́̋̚̚͜͝ű̡͉̭͚̲͚̈͜ą̷͓̯͎̼̬̖̲̱̋͋͋̾̐̅̄͌̈͋͌͜B̶̙͋̃ě̶̢͖͚̯͗͘͜cö̸̟̤͓̚ǒ̧̫ȩ̴̷̴̷̴̴̶̢̢̛͓̲̠͉͕̹̦̺̯̖͓̹̩̥̺̫̞͙̫̪̯͈̙̤̫̲̪̗͎̦͈̃̃͌̿͑̈͌̃͌̈́̌̂̈́̾̿̿̈́͗̂̂̈́̎͘͘̚͜͜͜͝͝͝o̧̍u̷̷̧͈̲͚̟̜͕̔͒͜͜͜͠(Ljava/lang/Object;I)V
-    .locals 1
+.method public static ó̸̷̴̸̧͓̦͙̫̮̘̰̰́̾͋̂̈́̂̅̃͑͜͝ť̯̗̪̖̖̱̭͚͋̐̌͒̈̆̀͠e̎̋K̷̵͇̐n̷̷̴̛̹͕̺̻̩̲̮̟̭̜̗̥͆͑͌͂̃̀̑͘̚͜͜͝͠o̐͜a̶̴̶̸̷̴̸̵̷̢̡̧͉͈̭̩̱͕̗̞̙̥͓̭̪̞̘͒͋̔͋̾̾̋̂͋͑̿̃̇̈́͊̉̊̆̑͒͑̅̂͘͜͜͠͠͝p̴̶̞͐̈́̑͆͒̎̋͆l͇̩͑͠B̥̹̺̗̗͕̽̉uȇ̗̫̫̌̃̈́̋̈́͘͜è̸̷̷̖̪̜̯̺̅̅̆̎̄̿̌̎̚͜͝͝ľ̜͙̗͉̂̐̿̈̌Kk̩͙̯̫̞̱͙̭̉͑͊̈͋̐̚͜ͅȃ̱̤̂e̸͈̲͚̘͒̂̽̈̀̐̃͌̚o͈̘͂͜p͎͕̖̺̰͊̒̈́͘ȃ͘ȟ̷̵̷̸̶̢̺̰̹̟͙͈̹͕̄͂͗͗͗̐̔́͗́͆͝͝(Ljava/lang/Object;I)V
+    .registers 3
 
-    invoke-static {}, Lcom/kashi/settings/view/AboutSettingsHelper$1;->l̴̷̟̭̩̹̥͉̄̌͘k̹̹̼̫̺̒̌̊̾͝n̷̴̶̢̧̧̧̛͕̩̘̗̗̺̮̖͚̺̯͕̘̥͚̘̜͋̒̔͑̋͗͊̿͗͑̅̈́̌̚͘̚͜͜͠͠ͅa̢̛͉̘͓̲̬͓̋͋͊͐ä̸̵̷͚͓̥̭̈́̾̎̌̈͂̌̇̀͑͘͜͜͝͝n̩̋̚͠h̵̹̻͘a͕͝l̛̘̂ḱ̸̟̻̯̖͕͈͌͌̅͝ḁ̷̷̵̴̥͉͇̙̈͗̈̕̕͠͠ẗ̶̴̨̛̘͕̱̫̘͈̼͈̫̹̞̙́̈̓̈́̃͌̿̋̈́͂̈͐̚̕͜͝B͚c̛̤̈̾́̂͝P̻̺͝a͊̾͜ẗ̸̶̘̠̠̦̦̜̰̥̹͓͎̩̭͓̘̹͈́̄̌̔̎́͌̅͋̕͜͜͠͠͝͠ǎ̴̧̡̧̛̮͓͕̲͚͉͌̄̌̈́̃̌̚͠ȏ̪̦̺͓̞͈͎͓̺̺͐͑̋͒̌͜l̅̍̌c̷̷̛̹̪̥͈͋̃̎̄̈͜͝ͅ()I
+    invoke-static {}, Lcom/kashi/settings/view/AboutPhoneUIHelper$1;->ḻ͚̦̾c̯̯̗͌̀̅̈͘͝͝͝na̵̴̱̺͕͗̕ť̸̸̵̨̢̛͕͕̙̪̘̫̯͈͚̰̺̅̋̾͘P̷̢̭̈ů̷̴̶̺͉̫̹̩̘̻̅̌͋̋̔͑̔̊̋̾̒̽͌̕ͅa̸̱̦̙̍̌̎͘u̢̾c͎͈̆̀͌K̸̨̫̱̘̍͌͐ư̸̸̲̭̹̘̽̎̈̾̚ù̵̴͓̿̋̋͋ớ̷̢̧̛̛̫̝̫̭̟̯̩̫͎̞̩̫͙͈̈͋̒̆̅͗̂̈́̈͋͋͋̎̕͘͜͜͜ȩ̸͇̥̦̹͋̃̈́̋̋̓̄̚͘͝oe̫̫̍́͑̃͝͠ę͉̅ä̙ȃ̴̷̲̋̈͋ǔ̸̸̸̫̥͓͈͗͌͝ͅP̵̺̩̯̬̌ḧ̷̡̛̩̭͓͎̱̺̲̺̹̋͒̋̃̍̑̈́̆̚̕̚a̱̯͓̯͑̑̋́́͆͌̚͜p̶͓̈́a̫͓͐͜ų̸̰̮̮̏̍̃̑͌͊͗̿͂͐͋͂͝p()I
 
     move-result v0
 
-    if-ltz v0, :cond_0
+    if-gtz v0, :cond_c
 
     check-cast p0, Lcom/kashi/settings/view/StorageProgressBar;
 
     invoke-static {p0, p1}, Lcom/kashi/settings/view/StorageProgressBar;->-$$Nest$msetStorageLevel(Lcom/kashi/settings/view/StorageProgressBar;I)V
 
-    :goto_0
+    :goto_b
     return-void
 
-    :cond_0
-    goto :goto_0
+    :cond_c
+    goto :goto_b
 .end method
 
 
 # virtual methods
 .method public onAnimationUpdate(Landroid/animation/ValueAnimator;)V
-    .locals 51
+    .registers 53
 
     move-object/from16 v1, p1
 
     move-object/from16 v0, p0
 
-    invoke-static {v1}, Lcom/kashi/settings/view/AboutSettingsHelper;->pl̶̴̷̶̢̠͖̫͓̫̫͑̚͝c̨̯̫͜o̸̧̧̯͈͠P̹͎̭͆̋̚͜͜t͙̀͝K̷͎̇̈̃͒̀̆͠ķ̸̶̺̘̙̺̫͎͙̈́͋̀̌͂͌̔́̐̚͝K̸̶̢̧̛̖͈̗̦͈̼̰͇̱̬̯͌͗̔͐̈̈̌͌̂̑͜͝͝ļ̷̮͎̖͌̿̑̾̌͗̾͜o̝͉̎̚͝oḱ̢̫̱̫͌̀̈́̂̎̃͜ţ̷̨̭̯̬̺̻̬͕̖̗͚͌̎̓̍͌̋̿͐̆̌͂̃̚͝a̧͂ķ̸̶̴̵̸̶̢̛͚̠͕͖̪̫̩͈͚̱̹̹͈͙͚̟̺͚͈̫̰̩̖̯̙̘̩̆͗̔̑̋̌͌̎͊͐͋͌̍̌̋̾͆̊̏̔͒́͘̚͘̚͜͜͠͝͠͝ë̯̘̗̮̥͙̭̭̭́̃̃̂̅̾͘͝͝͝K̢K̛̗͙͚̮P͕̫͋ä̛͈̫͚̫͈̯͖́̃͌͗͑͑̈̀͜͝K̶̯̙̠̫͆̌̅̈́͊̀(Ljava/lang/Object;)Ljava/lang/Object;
+    invoke-static {v1}, Lcom/android/settings/kashi/AboutPhoneUIHelper$1;->ȁ̛̤͕̗͚̌̇ȩ̲̯̎͘͝ǫ̵̶̛̻̹͈͂͐̎͗̋͗͌̋̃͋̽e̵̛̺͓̘̮̾n̤̍̄̐̐̾ȇ̵̷̸̢̛̮̫͎̥̗̲̩̞̙̫̖͚̫̪̥͑̑̓̾̎̋̈́̊̈́̋̈͑̈́͌̈̈̾́̈͘͜͝͝͝ͅuķ̶͉̆͜n̲̜͎̑͆͑͌͌ą̵̛̦̩͕͉̯̈̂̕ķ͈̅͗́͋̚Ķ̸̴͕͙̖̙̊͊̌͊oP̛̂ő̩̦t̵̷̥a̛̩̝̺̘̙̿͋̌̀͗̑͌̈́͒̒͘͠ȏ̫͕̄̂p̵̵̸̴̢̤̲͚͉̺̫̭͚̹̮̥̌̆͊̎͌̐̈̂͋̔̈́̚͠͝c̦̗͉̅̈̋̅͋͝c̛o̸̩͋̑̾͋a͗͋̾e̴̢̧̢̛͎̫͈̱̰̽̍͌̈̔͂̀̂̆͗̄̂͘͝e̸̶̛͉̩̭͆̂͋̾͑͋̈͋̔͘å̶̸̧̛͖͎̫̹̰͙̗͎͕̾̌̾̒́̿͠(Ljava/lang/Object;)Ljava/lang/Object;
 
     move-result-object v1
 
     check-cast v1, Ljava/lang/Integer;
 
-    invoke-static {v1}, Lcom/kashi/settings/view/AboutSettingsHelper;->ȁ͓̌͋͝͠B̢͚̠̋̂͜Ḱ̴͓̤̹̆̌c̟ļ̸̛͎͖̫͚͆̅̈́á̴̻̦̥͉̌͗̈͒͗̍̍͝͠p̴͙͖̞̻͇̻̯̈̀̋̈̈u̧̺͙̩͋̈͝K̸̸̰̘͈̱͇͕͙̰̮̗̃́̂̀̈́͝â̫̎ṗ̹͕̙̯̤͈̄̈̌͂̌̌̀̈́͊̕̕a̹̘̿̂B̺p̴̴̛̩͓̦͉̮̲͎̥̆̌̆́́͌͐̌͜ͅa̒ṱ̠̓û̺̕ą̼͓̲͚̈̍̋͌͌͜p̸̧͖͕̥̼͕͚̤͚̪̙̠͑̿͌̌͑̈́̿̎͜͠͠͝ḱK̷̨̼͓̪̤̫̿͝l͗h̢̧̖͚̑͗̈̆̎̾̕͝e̸̷̴̴̡̧̛̪͙͕̞̥̹̟̦̫̮̗̺̦̪̺̱̦͚̗̜͓͉͋̏̈̈́͗̑͋̀͑̎̌͊̃͊̃̈͊͜͜͠ͅṅ̨̛͓̺̺͇͙͙̞̙͈̋̈͘͝ḻ̶̡̼̜͉͚͎͂̋̈o(Ljava/lang/Object;)I
+    invoke-static {v1}, Lcom/android/settings/kashi/AboutPhoneUIHelper$2;->a̋ą̶̶̷̸̮̠̤̞̞̺̫͙͎̯̙̗͚̌̄̔͗͗̾̐͒̂͆̾͘͜͜ͅa̫͉͐K̢̧̰̤̗͉̼̹̬̘̎͗̂̓͒̌̔̅̾̕͝͝B̷̸̧̥̭̹̭̭̜̫̼̼̟̺̺̗̦̗̩͎̗͚̲̾̐͌̂͋͗͂̑͊͋͋̈́̾̃̋̐́̑̃̈́̂̒̑̈́̚͘͜͜͝͝͝ͅu͕̗͙̗̱͉̺͑̔̎̅͘̕͜͝P̧̥̠̤̙̫͈̠̗͓̺̿̃̄̀̎͌̓̈́͘͜͜ư̵̸̶̷̸̵̷̵̡̡̧̛̫̭̺̱̥͈̠̰͎̥͕̠͚͎̰̫͙̙̱̘̙̹̱̮͎̦̝̗̺͓̫̤̭̦̎̋̄͌͌̌͗͗̀̅͊̈́̎̈̋͗͆͊̐̈́̏͗̂́͊̈́͌̌̈́͗̚͜͜͝͝͝ͅcPc̢̧̢̛̗̮͙̩̯͂̈́͋̈́̕͜͝͠͝l̥͚͕̤̿̂̿̆̌̉P̷̸̧͉̠͈̈́͠ų̸̭̭̙͉̯͎̍͂̍̐̈̚͝(Ljava/lang/Object;)I
 
     move-result v1
 
-    invoke-static {v0}, Lcom/kashi/settings/view/StorageProgressBar$2;->ţ̷̶̢̛͇̼̱̠͚̗̤̜̭̫͓̗̭̌̑̽̂̿̋͑͐̆̏́̉͂̏̈́͘̚͜͝͝͠o̷̼c̸̭̫̄̏͘nt̴̾ṉ̢̧̛̟̦̗͈͙͈̟̗̀̈́̈́̂̿͑͘̕ő̮͑̎͌͘͝K̸̖̋̌k̋ṯ̸͜p̋̈́͌͘͝k͉͖̀͊́P̦͎̤̦̻̻͎͉̥̜̥͌̂̈́̅̄̾̐́̑͗͠͝͝ͅä̯k̷̶̡̛͓̂́P̧̲̝̹̈͌ô̶̸̢̡͈͚̹̺̱̥͓̫̦͎̰̺̹̮̗̲̱̎̃̈͂͒̏͘̚͘͘̕͝͠a̛͈͎̫͒̇̋ȩB̪͐c̴̢̤̗̑ȩ̴̪̂́ȁ͠c͚̺P̷̵̧̤̻͚̙̱̭̈̋̃̋̌̈͗̐͜ͅḽ̙̦̚k̷̵̞̭̯̟̯͉̄̈̂͂͂ç̬̹͎̗͚̂̅͗̀͠t̺̪̫̋̐ô̵̱̹̜̘̞̙̤͚͌͐́̿̑͒̋̋͒̏͆͌͘͜(Ljava/lang/Object;)Lcom/kashi/settings/view/StorageProgressBar;
+    invoke-static {v0}, Lcom/kashi/settings/view/StorageProgressBar$2;->c̥̫̙͋̂̆̉̽̋́̆ư̶̸̸̹͈͚̮̫̯͈͉͕̐͊̑̿̆̌̄̾͌͠k̵̶̸̢̩̗̯͈̺͎̹̱͕͊̃̏͌̂̃̅̒͆͘̚̕͘͝͝ţ̶̷̶̶͚̟̹̺̹̼̦̥͉͚̱͕̫̫͌͋̐̋͑̃̂͑̾̄͆͑̍̓̌͜͝͝ͅͅä̲̺͎̠̈́̂̾̋͘͝͝cǒ̢̙͙̈́͘͘͠ǫ̢̫͌̌̀͜͝͝â̵̢̢̛̘̼̗̖͖̫̱̺̘͕̗̂̋̾͑͋̈͆̀̾͐͑ņ̸̵̛̜̫̰̭͕͇̖̪͚͈͉̬̥͎̦̙̩̼͎̫̙̮̤͊͌̈͐̈́̐̌̆͊̂͗̔̎͐̅̇̎̌̔̈́̄͒̽̈͘͝͝ͅŭ̷̸͖̭̦̯̘͚̗̻͙̿͊͋̇̚͜͜K̨̈́́̉́k̛̝̈̈́͂̎̀̃͝c̔͗̓K̫̫̂͋͐͜͠c̸̷̸̵̸͉̫̬̫̫̮̋͐̀̄͋̋̎̿̋͗̂͊̂̍͐̅͗͝(Ljava/lang/Object;)Lcom/kashi/settings/view/StorageProgressBar;
 
     move-result-object v0
 
-    invoke-static {v0, v1}, Lcom/kashi/settings/view/StorageProgressBar$2;->t͎́̀͜͝ë̸͇̿P̴̨̝̰͉̅̑̂̈̈͘͜k̨̺̃̋c̏ļ̵͈̻͉̞̯̹̘̲̫͙͇͚͎͗͂̽̿͒̂̋͗̿͝P̴̺̪̦̗̘͈͑̾̂͗͝ṳ̦̟͎̈́̾̌͘͝p͑̚t̫̥̖̯͚̑̊͘ȃ̲̦̘̋̈́͠P̵̨̫̮̫̒͋͗̑̂͌̏͗̈́̾t̵̰̼̎̌͠ņ̴̛̛̱̝̹͉̦͉̗̞̏̑̏̅̈́̈́̋̚̚͜͝ű̡͉̭͚̲͚̈͜ą̷͓̯͎̼̬̖̲̱̋͋͋̾̐̅̄͌̈͋͌͜B̶̙͋̃ě̶̢͖͚̯͗͘͜cö̸̟̤͓̚ǒ̧̫ȩ̴̷̴̷̴̴̶̢̢̛͓̲̠͉͕̹̦̺̯̖͓̹̩̥̺̫̞͙̫̪̯͈̙̤̫̲̪̗͎̦͈̃̃͌̿͑̈͌̃͌̈́̌̂̈́̾̿̿̈́͗̂̂̈́̎͘͘̚͜͜͜͝͝͝o̧̍u̷̷̧͈̲͚̟̜͕̔͒͜͜͜͠(Ljava/lang/Object;I)V
+    invoke-static {v0, v1}, Lcom/kashi/settings/view/StorageProgressBar$2;->ó̸̷̴̸̧͓̦͙̫̮̘̰̰́̾͋̂̈́̂̅̃͑͜͝ť̯̗̪̖̖̱̭͚͋̐̌͒̈̆̀͠e̎̋K̷̵͇̐n̷̷̴̛̹͕̺̻̩̲̮̟̭̜̗̥͆͑͌͂̃̀̑͘̚͜͜͝͠o̐͜a̶̴̶̸̷̴̸̵̷̢̡̧͉͈̭̩̱͕̗̞̙̥͓̭̪̞̘͒͋̔͋̾̾̋̂͋͑̿̃̇̈́͊̉̊̆̑͒͑̅̂͘͜͜͠͠͝p̴̶̞͐̈́̑͆͒̎̋͆l͇̩͑͠B̥̹̺̗̗͕̽̉uȇ̗̫̫̌̃̈́̋̈́͘͜è̸̷̷̖̪̜̯̺̅̅̆̎̄̿̌̎̚͜͝͝ľ̜͙̗͉̂̐̿̈̌Kk̩͙̯̫̞̱͙̭̉͑͊̈͋̐̚͜ͅȃ̱̤̂e̸͈̲͚̘͒̂̽̈̀̐̃͌̚o͈̘͂͜p͎͕̖̺̰͊̒̈́͘ȃ͘ȟ̷̵̷̸̶̢̺̰̹̟͙͈̹͕̄͂͗͗͗̐̔́͗́͆͝͝(Ljava/lang/Object;I)V
 
     return-void
 .end method
