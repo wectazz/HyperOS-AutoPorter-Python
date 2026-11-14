@@ -674,7 +674,7 @@
 
     if-gez v0, :cond_a
 
-    const-string/jumbo v0, "ro.product.marketname"
+    const-string/jumbo v0, "ro.build.version.incremental"
 
     :goto_9
     return-object v0
