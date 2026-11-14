@@ -445,6 +445,36 @@ SERVICES_VIBRATOR_REPLACE_PATCHES = [
     (["VibratorManagerServiceStub$Holder.smali"],
      VIBRATOR_SMALI_OLD, VIBRATOR_SMALI_NEW),
 ]
+# Long-press-power Gemini: the ROM's VoiceInteractionManagerService clears
+# Settings.Secure.voice_interaction_service during boot
+# (initForUserNoTracing -> setCurInteractor(null) writes "") because
+# onUserStarting/onUserUnlocking run while user 0 is still locked and GSA is
+# not directBootAware, so findAvailInteractor (MATCH_DIRECT_BOOT_AUTO query)
+# returns null. `assistant` survives, but with the paired setting empty the
+# manager reports "No active implementation" and SystemUI's AssistManager
+# falls back to startActivity() on the SERVICE component ("Activity class
+# ... does not exist") — vibration but no Gemini. Keep the stored component
+# instead; systemRunning() later binds it (switchImplementationIfNeeded
+# resolves the component with getServiceInfo flags 0, no direct-boot filter).
+# Proven on device with a KernelSU module: after a reboot the setting stays
+# GSA and dumpsys voiceinteraction shows mComponent=GSA + the NGA session
+# service. NOTE: a module copy of services.jar MUST carry the system_file
+# SELinux context — a shell_data_file/adb_data_file copy makes zygote fail
+# with "ClassNotFoundException: com.android.server.SystemServer" (bootloop).
+VOICE_KEEP_OLD = (
+    "    :cond_e5\n"
+    "    invoke-virtual {p0, v5, p1}, Lcom/android/server/voiceinteraction/VoiceInteractionManagerService$VoiceInteractionManagerServiceStub;->setCurInteractor(Landroid/content/ComponentName;I)V\n"
+)
+VOICE_KEEP_NEW = (
+    "    :cond_e5\n"
+    "    # voicefix: boot init runs while user 0 is still locked (GSA is not\n"
+    "    # directBootAware), so findAvailInteractor returns null; keep the\n"
+    "    # stored component, systemRunning() binds it afterwards.\n"
+)
+SERVICES_VOICE_KEEP_REPLACE_PATCHES = [
+    (["VoiceInteractionManagerService$VoiceInteractionManagerServiceStub.smali"],
+     VOICE_KEEP_OLD, VOICE_KEEP_NEW),
+]
 
 # Extended keyboard (Baidu -> Gboard), always applied in both modes (step
 # 4f2 jars + step 4g2 APKs). Both the dotted form (const-string component
@@ -1494,46 +1524,6 @@ FPS_FIX_SCRIPT = """#!/system/bin/sh
 # Drop a refresh-rate cap stored before the PowerKeeper patch (no-op when the
 # setting is absent).
 settings delete system thermal_limit_refresh_rate >/dev/null 2>&1
-"""
-# Long-press-power Gemini survives the boot only if BOTH assistant settings
-# name GSA: `assistant` (what SystemUI asks for) and
-# `voice_interaction_service` (what makes VoiceInteractionManager bind it).
-# The ROM clears the latter during boot: initForUserNoTracing ->
-# setCurInteractor(null) writes "", because voice_recognition_service is
-# unset (no early return) and findAvailInteractionService does not resolve
-# GSA yet. With it empty the manager reports "No active implementation" and
-# AssistManager falls back to startActivity() on the SERVICE component ->
-# "Activity class ... does not exist", vibration but no Gemini. `assistant`
-# survives the boot, so re-assert the paired setting a few times (only while
-# `assistant` is GSA, so a user-picked other assistant is left alone).
-INIT_RC_VOICEFIX_APPEND = [
-    "on property:sys.boot_completed=1",
-    "   start voicefix",
-    "",
-    "service voicefix /system/bin/sh /system/bin/voicefix.sh",
-    "    seclabel u:r:shell:s0",
-    "    user root",
-    "    oneshot",
-    "    disabled",
-]
-INIT_RC_VOICEFIX_GUARD = "service voicefix"
-VOICEFIX_SCRIPT_REL = "system/system/bin/voicefix.sh"
-VOICEFIX_SCRIPT = """#!/system/bin/sh
-# The ROM clears Settings.Secure.voice_interaction_service on every boot (see
-# the init.rc comment). Re-assert it while `assistant` points at GSA; retry
-# for a minute in case the manager re-initialises after boot_completed.
-GSA=com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService
-i=0
-while [ $i -lt 12 ]; do
-    if [ "$(settings get secure assistant)" = "$GSA" ]; then
-        vi=$(settings get secure voice_interaction_service)
-        if [ -z "$vi" ] || [ "$vi" = "null" ]; then
-            settings put secure voice_interaction_service "$GSA"
-        fi
-    fi
-    i=$((i+1))
-    sleep 5
-done
 """
 GEMINI_FIX_SCRIPT_REL = "system/system/bin/geminifix.sh"
 # DISABLED (not applied in apply_init_rc_tweak): the PermissionController
@@ -3274,17 +3264,9 @@ def apply_init_rc_tweak(build_root: Path) -> None:
             text += "\n"
         text += "\n".join(INIT_RC_FPS_APPEND) + "\n"
         changed = True
-    # The ROM clears voice_interaction_service on every boot, which breaks
-    # long-press-power Gemini (independent guard).
-    if INIT_RC_VOICEFIX_GUARD not in text:
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += "\n".join(INIT_RC_VOICEFIX_APPEND) + "\n"
-        changed = True
     # The scripts are written even when the rc blocks already exist (re-runs).
     # geminifix.sh is disabled together with its init.rc block above.
-    for rel, body in ((FPS_FIX_SCRIPT_REL, FPS_FIX_SCRIPT),
-                      (VOICEFIX_SCRIPT_REL, VOICEFIX_SCRIPT)):
+    for rel, body in ((FPS_FIX_SCRIPT_REL, FPS_FIX_SCRIPT),):
         script = build_root / rel
         if not script.is_file():
             script.parent.mkdir(parents=True, exist_ok=True)
@@ -3295,7 +3277,7 @@ def apply_init_rc_tweak(build_root: Path) -> None:
         print(f"  already present, skip {INIT_RC}\n")
         return
     rc.write_text(text)
-    print(f"  appended animationfix/fpsfix/voicefix blocks to {INIT_RC}")
+    print(f"  appended animationfix/fpsfix blocks to {INIT_RC}")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
@@ -7042,7 +7024,8 @@ def main() -> None:
     )
     # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void
     # when DSV, always: secure-flag bypass incl. brand-new
-    # isBypassSecureFlag + port vibrator rule).
+    # isBypassSecureFlag + port vibrator rule + voice_interaction_service
+    # boot-keep fix).
     # NOTE: services.jar lives in system/system (AOSP location), NOT in
     # system_ext like miui-services.jar (proven by CI: absent under system_ext).
     patch_jar_smali(
@@ -7051,7 +7034,10 @@ def main() -> None:
         BASE_DIR / "smali_work" / "services",
         start_patches=SERVICES_START_PATCHES,
         new_method_patches=SERVICES_NEW_METHODS,
-        replace_patches=vibrator_replace or None,
+        # Functional, both modes: keep voice_interaction_service across boot
+        # (the ROM clears it while the user is still locked) + port vibrator.
+        replace_patches=(vibrator_replace
+                         + SERVICES_VOICE_KEEP_REPLACE_PATCHES) or None,
     )
 
     # Step 4g2: Smali-patch APKs (extended keyboard). Always, both modes;
