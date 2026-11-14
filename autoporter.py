@@ -1499,6 +1499,7 @@ PRODUCT_PROP_APPEND = [
     "ro.miui.has_handy_mode_sf=1",
     "ro.miui.support.system.app.uninstall.v2=true",
     "ro.miui.product.home=com.miui.home",
+    "ro.custom.build.name=Stable | by wectazz",
 ]
 SYSTEM_PROP_APPEND = [
     "ro.control_privapp_permissions=",
