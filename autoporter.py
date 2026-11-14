@@ -543,8 +543,56 @@ POWERKEEPER_METHOD_PATCHES = [
      ["const/4 p0, 0x0", "return p0"]),
     (["statemachine/DisplayFrameSetting.smali"],
      ["setScreenEffect(Ljava/lang/String;II)V",
-      "setScreenEffectInternal(ILjava/lang/String;)V"], "keep", None),
+      "setScreenEffectInternal(ILjava/lang/String;)V",
+      "setScreenEffect(II)V"], "keep", None),
+    # kashi v4.0 FPS patcher: video apps in the cloud dfps_group pin the panel
+    # to the video frame rate on foreground change -> no-op the handler.
+    (["statemachine/DisplayDfpsHandler.smali"], ["onForegroundChanged("],
+     "keep", None),
+    # kashi v4.0: miui.intent.action.POWERKEEPER_CLOUD_TEST is exported with
+    # no permission and lets any app swap the cloud policy URLs -> disable.
+    (["cloudcontrol/CloudUpdateHideMode.smali"], ["setTestFunc("],
+     "keep", None),
 ]
+# Joyose.apk (kashi v4.0): FCController reads a per-game (layer, value) pair
+# from its cloud game config and caps that game's frames with
+# `service call SurfaceFlinger 31204 s16 <layer> i32 <v>`. No-op the start
+# method (the stop method only clears a cap). The class is obfuscated
+# (`.../gamebooster/control/c`), so it is found by the two binder strings and
+# the method by its (String, Integer) signature.
+JOYOSE_APK = "product/app/Joyose/Joyose.apk"
+
+
+def patch_joyose_fc_start(text: str) -> tuple:
+    if ("start FC" not in text
+            or "service call SurfaceFlinger 31204" not in text):
+        return text, 0
+    out: List[str] = []
+    skipping = False
+    regs = None
+    hit = False
+    for line in text.splitlines(keepends=True):
+        s = line.strip()
+        if not skipping:
+            if (s.startswith(".method")
+                    and s.endswith("(Ljava/lang/String;Ljava/lang/Integer;)V")):
+                out.append(line)
+                skipping = True
+                regs = None
+                hit = True
+                continue
+            out.append(line)
+            continue
+        if s.startswith(".registers") or s.startswith(".locals"):
+            regs = line
+        if s == ".end method":
+            out.append(regs if regs else "    .locals 0\n")
+            out.append("    return-void\n")
+            out.append(line)
+            skipping = False
+    if not hit:
+        return text, 0
+    return "".join(out), 1
 # MiuiSystemUI.apk (always, both modes): show the VoLTE icon on CN. Each of
 # the three classes reads IS_INTERNATIONAL_BUILD exactly once and takes the
 # international VoLTE path only when it is true; force the register to 1
@@ -1447,6 +1495,26 @@ INIT_RC_GEMINI_APPEND = [
     "    disabled",
 ]
 INIT_RC_GEMINI_GUARD = "service geminifix"
+# kashi v4.0 FPS patcher: PowerKeeper can store a refresh-rate cap in
+# `settings system thermal_limit_refresh_rate`; patched builds never write it
+# again, so clearing it once per boot is enough (harmless when unset).
+INIT_RC_FPS_APPEND = [
+    "on property:sys.boot_completed=1",
+    "   start fpsfix",
+    "",
+    "service fpsfix /system/bin/sh /system/bin/fpsfix.sh",
+    "    seclabel u:r:shell:s0",
+    "    user root",
+    "    oneshot",
+    "    disabled",
+]
+INIT_RC_FPS_GUARD = "service fpsfix"
+FPS_FIX_SCRIPT_REL = "system/system/bin/fpsfix.sh"
+FPS_FIX_SCRIPT = """#!/system/bin/sh
+# Drop a refresh-rate cap stored before the PowerKeeper patch (no-op when the
+# setting is absent).
+settings delete system thermal_limit_refresh_rate >/dev/null 2>&1
+"""
 GEMINI_FIX_SCRIPT_REL = "system/system/bin/geminifix.sh"
 GEMINI_FIX_SCRIPT = """#!/system/bin/sh
 # Seed the long-press-power assistant only when unset (null/empty): the
@@ -1534,12 +1602,12 @@ SYSTEM_PROP_APPEND = [
     "persist.sys.props.games=true",
     "debug.graphics.game_default_frame_rate.disabled=true",
     "debug.hwui.renderer=skiavk",
-    "persist.service.adb.enable=1",
-    "persist.service.debuggable=1",
-    "persist.sys.usb.config=adb",
-    "ro.adb.secure=0",
-    "ro.secure=0",
-    "ro.debuggable=1",
+    #"persist.service.adb.enable=1",
+    #"persist.service.debuggable=1",
+    #"persist.sys.usb.config=adb",
+    #"ro.adb.secure=0",
+    #"ro.secure=0",
+    #"ro.debuggable=1",
 ]
 # Computility levels (hos4/hos4_gl, either mode): written into
 # product/etc/build.prop. The keys already exist in stock build.prop, so
@@ -3153,6 +3221,20 @@ def apply_init_rc_tweak(build_root: Path) -> None:
     #         text += "\n"
     #     text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
     #     changed = True
+    # kashi v4.0 FPS patcher: clear a refresh-rate cap stored before the
+    # PowerKeeper patch (independent guard).
+    if INIT_RC_FPS_GUARD not in text:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join(INIT_RC_FPS_APPEND) + "\n"
+        changed = True
+    # The script is written even when the rc block already exists (re-runs).
+    fps_script = build_root / FPS_FIX_SCRIPT_REL
+    if not fps_script.is_file():
+        fps_script.parent.mkdir(parents=True, exist_ok=True)
+        fps_script.write_text(FPS_FIX_SCRIPT)
+        fps_script.chmod(0o755)
+        print(f"  wrote {FPS_FIX_SCRIPT_REL}")
     if not changed:
         print(f"  already present, skip {INIT_RC}\n")
         return
@@ -3163,7 +3245,7 @@ def apply_init_rc_tweak(build_root: Path) -> None:
     # script.write_text(GEMINI_FIX_SCRIPT)
     # script.chmod(0o755)
     print(f"  appended animationfix block to {INIT_RC}")
-    print("  [debug] geminifix block + geminifix.sh disabled\n")
+    print("  appended fpsfix block (thermal_limit_refresh_rate reset)")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
@@ -7005,6 +7087,16 @@ def main() -> None:
         [],
         patch_root,
         method_body_patches=POWERKEEPER_METHOD_PATCHES,
+    )
+    # Step 4g2c2: Joyose FCController — no per-game FPS cap from the cloud
+    # game config (`service call SurfaceFlinger 31204`). Always, both modes;
+    # the class is found by its two binder strings, the method by the
+    # (String, Integer) signature. Missing APK/no match only warns.
+    patch_apk_smali(
+        JOYOSE_APK, "joyose",
+        [],
+        patch_root,
+        method_funcs=[(["*.smali"], patch_joyose_fc_start)],
     )
     # Step 4g2d: SystemUI VoLTE icon + notification white-list gates on CN.
     # Always, both modes; dex-only (resources stay byte-identical — the
