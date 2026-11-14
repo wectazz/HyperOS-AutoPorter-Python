@@ -704,6 +704,10 @@ GMS_DIALER_RES_PATCHES = [
 # (glob matched against every decoded file name, pattern is a regex —
 # the dimen line indent may vary, so only the tag+value is anchored).
 DEVICE_OVERLAY_APK = "product/overlay/DevicesOverlay.apk"
+# Multilang Settings RRO (the "project_mint_*" pack): carries every locale of
+# com.android.settings, including the default values, so it overrides the base
+# APK strings at runtime.
+SETELAN_OVERLAY_APK = "product/overlay/project_mint_Setelan.apk"
 DEVICE_OVERLAY_RES_PATCHES = [
     ("*.xml",
      r'(<dimen name="status_bar_padding_top">)14\.0px(</dimen>)',
@@ -1030,6 +1034,24 @@ SETTINGS_CAMERA_COLON_PATCHES = [
      '<string name="camera_front">Front:\u00a0%s</string>'),
     ("strings.xml", '<string name="camera_rear">Rear %s</string>',
      '<string name="camera_rear">Rear:\u00a0%s</string>'),
+]
+# The multilang RRO product/overlay/project_mint_Setelan.apk WINS over the
+# base Settings.apk strings (it declares camera_front/camera_rear for every
+# locale INCLUDING the default values, priority 999), so patching Settings
+# alone leaves non-RU locales without the colon. Same transform, applied to
+# every values*/strings.xml of the overlay:
+#   - label before the placeholder ("Front %s" -> "Front:\u00a0%s"), the
+#     common case (~156 strings, all locales);
+#   - placeholder first ("%s جلو" -> "%s:\u00a0جلو"), Persian only (~2).
+# The label class excludes ':' so already-patched strings (ru) are skipped on
+# re-runs, and NBSP survives updateCameraInfo's .replace(" ", "").
+SETELAN_CAMERA_COLON_PATCHES = [
+    ('strings.xml',
+     r'(<string name="camera_(?:front|rear)">)([^<:\n]*?)\s*%s(</string>)',
+     '\\1\\2:\u00a0%s\\3'),
+    ('strings.xml',
+     r'(<string name="camera_(?:front|rear)">)%s\s*([^<:\n]+)(</string>)',
+     '\\1%s:\u00a0\\2\\3'),
 ]
 # miuix spring/over-scroll: SpringBackLayout/SpringRecyclerView disable the
 # spring when ro.product.mod_device contains "_global" (miuix.os.Build.
@@ -7191,6 +7213,16 @@ def main() -> None:
     patch_apk_res(
         MIUIFRAMEWORK_TELEPHONY_OVERLAY_APK, "miuiframeworktelephonyoverlay",
         MIUIFRAMEWORK_TELEPHONY_OVERLAY_RES_PATCHES,
+        patch_root,
+    )
+
+    # Step 4g3d: multilang Settings RRO — colon + NBSP in the camera card
+    # labels for EVERY locale (the overlay wins over the base Settings.apk
+    # strings, so the 4g2 camera-colon rules alone leave other languages
+    # without it). Always, both modes; missing APK/no match only warns.
+    patch_apk_res(
+        SETELAN_OVERLAY_APK, "setelanoverlay",
+        SETELAN_CAMERA_COLON_PATCHES,
         patch_root,
     )
 
