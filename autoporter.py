@@ -1495,6 +1495,46 @@ FPS_FIX_SCRIPT = """#!/system/bin/sh
 # setting is absent).
 settings delete system thermal_limit_refresh_rate >/dev/null 2>&1
 """
+# Long-press-power Gemini survives the boot only if BOTH assistant settings
+# name GSA: `assistant` (what SystemUI asks for) and
+# `voice_interaction_service` (what makes VoiceInteractionManager bind it).
+# The ROM clears the latter during boot: initForUserNoTracing ->
+# setCurInteractor(null) writes "", because voice_recognition_service is
+# unset (no early return) and findAvailInteractionService does not resolve
+# GSA yet. With it empty the manager reports "No active implementation" and
+# AssistManager falls back to startActivity() on the SERVICE component ->
+# "Activity class ... does not exist", vibration but no Gemini. `assistant`
+# survives the boot, so re-assert the paired setting a few times (only while
+# `assistant` is GSA, so a user-picked other assistant is left alone).
+INIT_RC_VOICEFIX_APPEND = [
+    "on property:sys.boot_completed=1",
+    "   start voicefix",
+    "",
+    "service voicefix /system/bin/sh /system/bin/voicefix.sh",
+    "    seclabel u:r:shell:s0",
+    "    user root",
+    "    oneshot",
+    "    disabled",
+]
+INIT_RC_VOICEFIX_GUARD = "service voicefix"
+VOICEFIX_SCRIPT_REL = "system/system/bin/voicefix.sh"
+VOICEFIX_SCRIPT = """#!/system/bin/sh
+# The ROM clears Settings.Secure.voice_interaction_service on every boot (see
+# the init.rc comment). Re-assert it while `assistant` points at GSA; retry
+# for a minute in case the manager re-initialises after boot_completed.
+GSA=com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService
+i=0
+while [ $i -lt 12 ]; do
+    if [ "$(settings get secure assistant)" = "$GSA" ]; then
+        vi=$(settings get secure voice_interaction_service)
+        if [ -z "$vi" ] || [ "$vi" = "null" ]; then
+            settings put secure voice_interaction_service "$GSA"
+        fi
+    fi
+    i=$((i+1))
+    sleep 5
+done
+"""
 GEMINI_FIX_SCRIPT_REL = "system/system/bin/geminifix.sh"
 # DISABLED (not applied in apply_init_rc_tweak): the PermissionController
 # role picker ("Default digital assistant app") writes BOTH settings below
@@ -3234,9 +3274,17 @@ def apply_init_rc_tweak(build_root: Path) -> None:
             text += "\n"
         text += "\n".join(INIT_RC_FPS_APPEND) + "\n"
         changed = True
+    # The ROM clears voice_interaction_service on every boot, which breaks
+    # long-press-power Gemini (independent guard).
+    if INIT_RC_VOICEFIX_GUARD not in text:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join(INIT_RC_VOICEFIX_APPEND) + "\n"
+        changed = True
     # The scripts are written even when the rc blocks already exist (re-runs).
     # geminifix.sh is disabled together with its init.rc block above.
-    for rel, body in ((FPS_FIX_SCRIPT_REL, FPS_FIX_SCRIPT),):
+    for rel, body in ((FPS_FIX_SCRIPT_REL, FPS_FIX_SCRIPT),
+                      (VOICEFIX_SCRIPT_REL, VOICEFIX_SCRIPT)):
         script = build_root / rel
         if not script.is_file():
             script.parent.mkdir(parents=True, exist_ok=True)
@@ -3247,7 +3295,7 @@ def apply_init_rc_tweak(build_root: Path) -> None:
         print(f"  already present, skip {INIT_RC}\n")
         return
     rc.write_text(text)
-    print(f"  appended animationfix/fpsfix blocks to {INIT_RC}")
+    print(f"  appended animationfix/fpsfix/voicefix blocks to {INIT_RC}")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
