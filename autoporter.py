@@ -4281,37 +4281,6 @@ def patch_miui_settings_google_header(text: str) -> tuple:
     return text[:end] + "\n\n    const/4 v0, 0x1" + text[end:], 1
 
 
-def patch_eye_comfort_version(text: str) -> tuple:
-    """MiuiUtils.getGreenMountainEyeCareVersion(): the port ships only
-    framework-res.apk with the `android` package, so the MIUI
-    `android.miui:integer/green_mountain_eyecare_version` resource is absent
-    and the method returns 0. PaperModeUtils.supportNewPaperMode() ->
-    isSupportGreenMountainEyeCare() then hides the new "Eye comfort" UI
-    (paper_mode_settings.xml new_paper_mode_ui) behind the old reading-mode
-    page. Return 3 to enable the new UI. UI-only on purpose: the framework
-    flag (DisplayFeatureManagerService) stays false, so the V3 effects are
-    not forced on (they apply but do not reset cleanly on this port).
-    Returns (new_text, patched_methods)."""
-    marker = ".method public static getGreenMountainEyeCareVersion()I"
-    start = text.find(marker)
-    if start < 0:
-        return text, 0
-    end = text.find(".end method", start)
-    if end < 0:
-        return text, 0
-    end += len(".end method")
-    if text[start:end] == marker + "\n    .registers 1\n\n    const/4 v0, 0x3\n\n    return v0\n.end method":
-        return text, 1  # already patched
-    new = (".method public static getGreenMountainEyeCareVersion()I\n"
-           "    .registers 1\n"
-           "\n"
-           "    const/4 v0, 0x3\n"
-           "\n"
-           "    return v0\n"
-           ".end method")
-    return text[:start] + new + text[end:], 1
-
-
 def patch_settings_index_map(text: str) -> tuple:
     """MIUI14 INDEX_MAP reorder (Screen size before RAM). The 5->3 put and
     the 7->6 put share the same register line, so replace only the first
@@ -7277,8 +7246,6 @@ def main() -> None:
         # for CN builds; global needs the same pieces for its grid).
         (["DeviceBasicInfoPresenter$1.smali"], patch_settings_index_map),
         (["DeviceBasicInfoPresenter.smali"], patch_settings_memory_type),
-        # New "Eye comfort" UI (the resource is absent on the port).
-        (["MiuiUtils.smali"], patch_eye_comfort_version),
     ]
     patch_apk_apktool(
         SETTINGS_APK, "settings",
