@@ -1270,13 +1270,83 @@ def _append_missing_xml_items(text: str, items) -> tuple:
     return new_text, len(missing)
 
 
+# MIUI Settings "Global -> CN" swaps (hyperos guides): the theme / security /
+# privacy / personalization / wallpaper entries take the CN branch when
+# IS_INTERNATIONAL_BUILD is false. Swapping those reads to IS_ALPHA_BUILD (a
+# hardcoded false in miui.os.Build) forces the CN behavior on a global
+# (`_global` mod_device) build without hardcoding const/4. Each anchor is the
+# header id / feature read that precedes the target; every anchor occurrence
+# rewrites the next IS_INTERNATIONAL_BUILD read within the window (the
+# wallpaper id occurs twice: the click handler and the header list).
+# system_apps_updater's IS_GLOBAL_BUILD read gets const/4 v10, 0x0 below it
+# (CN removes the header). The swap adds a NEW field reference
+# (IS_ALPHA_BUILD), so MiuiSettings.smali is moved into the kashi dex first:
+# classes2 sits at exactly 65536 fields and one more field_id overflows the
+# 16-bit index, which made smali die mid-write (truncated classes2.dex ->
+# ClassNotFoundException: SettingsApplication). Missing anchors only warn.
+MIUI_SETTINGS_CN_ANCHORS = [
+    "Lcom/android/settings/R$id;->wallpaper_settings:I",
+    "Lcom/android/settings/utils/SettingsFeatures;->IS_NEED_REMOVE_THEME:Z",
+    "Lcom/android/settings/R$id;->security_status:I",
+    "Lcom/android/settings/R$id;->privacy_protection_settings:I",
+    "Lcom/android/settings/R$id;->personalize_title:I",
+]
+MIUI_SETTINGS_GLOBAL_ANCHOR = "Lcom/android/settings/R$id;->system_apps_updater:I"
+MIUI_SETTINGS_CN_WINDOW = 80
+
+
+def patch_miui_settings_cn(path: Path) -> None:
+    """Apply the hyperos-guides Global->CN swaps to MiuiSettings.smali:
+    rewrite the IS_INTERNATIONAL_BUILD read after each header anchor to
+    IS_ALPHA_BUILD, and force the system_apps_updater IS_GLOBAL_BUILD read
+    to 0. Idempotent; missing anchors only warn."""
+    lines = path.read_text().splitlines()
+    swapped = 0
+    for anchor in MIUI_SETTINGS_CN_ANCHORS:
+        hits = [i for i, line in enumerate(lines) if anchor in line]
+        if not hits:
+            print(f"  [warn] MiuiSettings anchor not found: {anchor}")
+            continue
+        for i in hits:
+            for j in range(i + 1,
+                           min(i + 1 + MIUI_SETTINGS_CN_WINDOW, len(lines))):
+                if "Lmiui/os/Build;->IS_ALPHA_BUILD:Z" in lines[j]:
+                    break  # already applied for this anchor hit
+                if "Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z" in lines[j]:
+                    lines[j] = lines[j].replace(
+                        "IS_INTERNATIONAL_BUILD:Z", "IS_ALPHA_BUILD:Z")
+                    swapped += 1
+                    break
+    forced = 0
+    for i in [i for i, line in enumerate(lines)
+              if MIUI_SETTINGS_GLOBAL_ANCHOR in line]:
+        for j in range(i + 1,
+                       min(i + 1 + MIUI_SETTINGS_CN_WINDOW, len(lines))):
+            if "Lmiui/os/Build;->IS_GLOBAL_BUILD:Z" not in lines[j]:
+                continue
+            k = j + 1
+            while k < len(lines) and not lines[k].strip():
+                k += 1
+            if k < len(lines) and lines[k].strip() == "const/4 v10, 0x0":
+                break  # already applied
+            lines.insert(j + 1, "    const/4 v10, 0x0")
+            lines.insert(j + 2, "")
+            forced += 1
+            break
+    path.write_text("\n".join(lines) + "\n")
+    print(f"  MiuiSettings Global->CN: {swapped} IS_ALPHA_BUILD swap(s), "
+          f"{forced} IS_GLOBAL_BUILD force(s)")
+
+
 def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
     """Merge the committed kashi_settings/ overlay into an apktool-decoded
     Settings tree: new smali into the classes12 dex dir (located by its
     vendor/.../misys content), new/overwritten res into res/ (public.xml
     is deliberately NOT carried — the rebuild reassigns IDs), wiring
-    smali block replaces (exact-once or warn-skip), and res appends.
-    Missing sources only warn."""
+    smali block replaces (exact-once or warn-skip), the hyperos-guides
+    Global->CN swaps in MiuiSettings (file moved into the kashi dex first
+    — the swap adds a field ref and classes2 sits at the field limit), and
+    res appends. Missing sources only warn."""
     if not KASHI_DIR.is_dir():
         print(f"  [warn] kashi overlay not found: {KASHI_DIR}, skip")
         return
@@ -1296,6 +1366,24 @@ def apply_kashi_overlay(work_root: Path, dex_dirs: list) -> None:
             shutil.copy2(src, dest)
             copied += 1
         print(f"  copied {copied} kashi smali files into {dex_target.name}/")
+        # The Global->CN swaps below reference IS_ALPHA_BUILD, a NEW field
+        # for classes2 (exactly 65536 fields -> 16-bit field_id overflow,
+        # smali truncates the dex). Host MiuiSettings in the kashi dex
+        # (classes12, ~51k fields) first; ART loads all classes*.dex alike.
+        for src_dir in dex_dirs:
+            src = src_dir / "com/android/settings/MiuiSettings.smali"
+            if not src.is_file():
+                continue
+            dst = dex_target / "com/android/settings/MiuiSettings.smali"
+            if src != dst:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                print(f"  moved MiuiSettings.smali {src_dir.name}/ -> "
+                      f"{dex_target.name}/ (dex field-limit headroom)")
+            patch_miui_settings_cn(dst)
+            break
+        else:
+            print("  [warn] MiuiSettings.smali not found, skip Global->CN swaps")
     # 2. new/overwritten res into res/ (miui_version_card.xml included:
     # full replacement rides the same overwrite copy)
     res_root = work_root / "res"
