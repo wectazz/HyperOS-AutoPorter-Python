@@ -511,8 +511,8 @@ DRM_BROADCAST_OLD = (
 MIUI_SERVICES_DRM_REPLACE_PATCHES = [
     (["ActivityManagerServiceImpl.smali"], DRM_BROADCAST_OLD, ""),
 ]
-# Voice assistant background start (step 4f, miui-services.jar, both modes,
-# functional — NOT dsv-gated). HyperOS blocks Activity starts from the
+# Voice assistant background start (step 4f, miui-services.jar, GLOBAL
+# builds only — skipped on CN, functional — NOT dsv-gated). HyperOS blocks Activity starts from the
 # background for non-system packages (MIUIOP 10021); a third-party assistant
 # (Claude, /data/app) is not exempt, so its VoiceInteractionSession cannot
 # show its overlay when the app is not in the foreground ("session starts,
@@ -7127,6 +7127,14 @@ def main() -> None:
                  if args.aod_fullscreen == "true" else [])
     if not aod_catch:
         print("Fullscreen-AOD jar catch skipped (--aod-fullscreen false).\n")
+    # Background activity start (MIUIOP 10021) exemption for third-party
+    # assistants: GLOBAL only. On CN the expected assistant is XiaoAI/GSA
+    # (both system packages, exempt anyway), so MIUI's restriction is kept
+    # as-is there.
+    voice_bgstart = ([(["ActivityStarterImpl.smali"], patch_voice_bgstart)]
+                     if region != "CN" else [])
+    if not voice_bgstart:
+        print("Assistant bg-start (10021) exemption skipped on CN.\n")
     patch_jar_smali(
         patch_root / "system_ext" / "framework" / "miui-services.jar",
         "miui-services", miui_methods, [],
@@ -7136,8 +7144,9 @@ def main() -> None:
         + keyboard_replace_rules(["InputMethodManagerServiceImpl.smali"])
         + MIUI_SERVICES_DRM_REPLACE_PATCHES,
         catch_patches=aod_catch,
-        # Background activity start for third-party assistants (MIUIOP 10021).
-        method_funcs=[(["ActivityStarterImpl.smali"], patch_voice_bgstart)],
+        # Background activity start for third-party assistants (MIUIOP
+        # 10021) — global only, empty on CN.
+        method_funcs=voice_bgstart or None,
     )
     # Step 4f2: Smali-patch miui-framework.jar (keyboard strings + the
     # shortcut region gate). Always, both modes.
