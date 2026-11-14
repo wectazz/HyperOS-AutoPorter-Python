@@ -563,6 +563,28 @@ POWERKEEPER_METHOD_PATCHES = [
 JOYOSE_APK = "product/app/Joyose/Joyose.apk"
 
 
+def patch_shortcut_region_gate(text: str) -> tuple:
+    """miui-framework.jar ShortcutFunctionManager.currentFunctionIsLegal():
+    the `regionType="global"` branch is gated by IS_INTERNATIONAL_BUILD, so
+    every global-only entry (launch_google_search -> "Google Ассистент") is
+    dropped on CN. Replace ONLY the second read (the one inside the "global"
+    branch) with `const/4 v4, 0x1`; the first read guards the "cn" branch and
+    must stay, otherwise all CN-only entries disappear instead."""
+    m = re.search(
+        r"^\.method [^\n]*currentFunctionIsLegal\([^\n]*\)Z\n.*?^\.end method\n",
+        text, re.S | re.M)
+    if not m:
+        return text, 0
+    body = m.group(0)
+    needle = "sget-boolean v4, Lmiui/os/Build;->IS_INTERNATIONAL_BUILD:Z"
+    parts = body.split(needle)
+    # 2 reads = stock (first "cn", second "global"); 1 read = already patched.
+    if len(parts) != 3 or 'const-string v4, "global"' not in parts[1]:
+        return text, 0
+    patched = parts[0] + needle + parts[1] + "const/4 v4, 0x1" + parts[2]
+    return text[:m.start()] + patched + text[m.end():], 1
+
+
 def patch_joyose_fc_start(text: str) -> tuple:
     if ("start FC" not in text
             or "service call SurfaceFlinger 31204" not in text):
@@ -1516,21 +1538,39 @@ FPS_FIX_SCRIPT = """#!/system/bin/sh
 settings delete system thermal_limit_refresh_rate >/dev/null 2>&1
 """
 GEMINI_FIX_SCRIPT_REL = "system/system/bin/geminifix.sh"
+# The assistant is two settings, and BOTH must name GSA: `assistant` is the
+# component SystemUI asks for, `voice_interaction_service` is what makes the
+# VoiceInteractionManager bind it. With only `assistant` set, SystemUI's
+# AssistManager takes the fallback branch (active service component is null)
+# and calls startActivity() on the SERVICE component -> ActivityStarter
+# "Activity class ... does not exist", vibration but no Gemini. With both set,
+# assistComponent == active service -> the voice interaction session starts
+# (proven on device: Gemini overlay opens).
 GEMINI_FIX_SCRIPT = """#!/system/bin/sh
 # Seed the long-press-power assistant only when unset (null/empty): the
 # MIUI settings have no default seed on a fresh data partition, so without
 # this the key is null and the gesture does nothing. Order matters:
 # long_press_power_launch_xiaoai=0 first (on CN a value of 1 makes the
 # settings observer rewrite the key to launch_voice_assistant), then the key.
+GSA=com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService
 v=$(settings get system long_press_power_key)
 if [ -z "$v" ] || [ "$v" = "null" ]; then
     settings put system long_press_power_launch_xiaoai 0
     settings put system long_press_power_key launch_google_search
 fi
+# Pair the two assistant settings: never point voice_interaction_service at
+# GSA unless `assistant` is (or just became) GSA too, so a user-picked other
+# assistant is left alone.
 a=$(settings get secure assistant)
 if [ -z "$a" ] || [ "$a" = "null" ]; then
-    settings put secure assistant com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService
-    settings put secure voice_interaction_service com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService
+    settings put secure assistant $GSA
+    a=$GSA
+fi
+if [ "$a" = "$GSA" ]; then
+    vi=$(settings get secure voice_interaction_service)
+    if [ -z "$vi" ] || [ "$vi" = "null" ]; then
+        settings put secure voice_interaction_service $GSA
+    fi
 fi
 """
 # About-phone overlay (step 4c3b, both modes, on patch_root): committed
@@ -3214,13 +3254,11 @@ def apply_init_rc_tweak(build_root: Path) -> None:
             text += "\n"
         text += "\n".join(INIT_RC_APPEND) + "\n"
         changed = True
-    # DEBUG: Gemini init seeding disabled (geminifix block + geminifix.sh).
-    # Re-enable by uncommenting this block and the script write below.
-    # if INIT_RC_GEMINI_GUARD not in text:
-    #     if text and not text.endswith("\n"):
-    #         text += "\n"
-    #     text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
-    #     changed = True
+    if INIT_RC_GEMINI_GUARD not in text:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join(INIT_RC_GEMINI_APPEND) + "\n"
+        changed = True
     # kashi v4.0 FPS patcher: clear a refresh-rate cap stored before the
     # PowerKeeper patch (independent guard).
     if INIT_RC_FPS_GUARD not in text:
@@ -3228,24 +3266,20 @@ def apply_init_rc_tweak(build_root: Path) -> None:
             text += "\n"
         text += "\n".join(INIT_RC_FPS_APPEND) + "\n"
         changed = True
-    # The script is written even when the rc block already exists (re-runs).
-    fps_script = build_root / FPS_FIX_SCRIPT_REL
-    if not fps_script.is_file():
-        fps_script.parent.mkdir(parents=True, exist_ok=True)
-        fps_script.write_text(FPS_FIX_SCRIPT)
-        fps_script.chmod(0o755)
-        print(f"  wrote {FPS_FIX_SCRIPT_REL}")
+    # The scripts are written even when the rc blocks already exist (re-runs).
+    for rel, body in ((FPS_FIX_SCRIPT_REL, FPS_FIX_SCRIPT),
+                      (GEMINI_FIX_SCRIPT_REL, GEMINI_FIX_SCRIPT)):
+        script = build_root / rel
+        if not script.is_file():
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(body)
+            script.chmod(0o755)
+            print(f"  wrote {rel}")
     if not changed:
         print(f"  already present, skip {INIT_RC}\n")
         return
     rc.write_text(text)
-    # DEBUG: geminifix.sh creation disabled together with the block above.
-    # script = build_root / GEMINI_FIX_SCRIPT_REL
-    # script.parent.mkdir(parents=True, exist_ok=True)
-    # script.write_text(GEMINI_FIX_SCRIPT)
-    # script.chmod(0o755)
-    print(f"  appended animationfix block to {INIT_RC}")
-    print("  appended fpsfix block (thermal_limit_refresh_rate reset)")
+    print(f"  appended animationfix/geminifix/fpsfix blocks to {INIT_RC}")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
@@ -4260,7 +4294,8 @@ def check_dex_blob(path: Path, what: str) -> None:
 
 def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches,
                     work_root: Path, start_patches=None, new_method_patches=None,
-                    replace_patches=None, catch_patches=None) -> None:
+                    replace_patches=None, catch_patches=None,
+                    method_funcs=None) -> None:
     """Decompile jar's classes*.dex with baksmali, inject dsv smali, apply the
     regex patches, reassemble with smali and replace the jar atomically."""
     if not jar_path.is_file():
@@ -4426,6 +4461,12 @@ def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches
                         continue
                     path.write_text(new_text)
                     print(f"  patched {path.name}: +{count} .catch {new_exc}")
+        # 3g. method-scoped text funcs (arbitrary per-method rewrites, e.g.
+        # the ShortcutFunctionManager region gate). Same helper as the APK
+        # patchers: the func gets the whole file text and returns
+        # (new_text, count).
+        _apply_apk_method_funcs(list(dex_out_dirs.values()), method_funcs,
+                                out_root)
         # 4. reassemble each dex (same --api it was decompiled with)
         new_blobs = {}
         for dex in dex_names:
@@ -6967,14 +7008,21 @@ def main() -> None:
         + MIUI_SERVICES_DRM_REPLACE_PATCHES,
         catch_patches=aod_catch,
     )
-    # Step 4f2: Smali-patch miui-framework.jar (keyboard strings only).
-    # Always, both modes.
+    # Step 4f2: Smali-patch miui-framework.jar (keyboard strings + the
+    # shortcut region gate). Always, both modes.
     patch_jar_smali(
         patch_root / "system_ext" / "framework" / "miui-framework.jar",
         "miui-framework", [], [],
         BASE_DIR / "smali_work" / "miui-framework",
         replace_patches=keyboard_replace_rules(
             ["InputMethodServiceInjector.smali"]),
+        # ShortcutFunctionManager.currentFunctionIsLegal(): accept
+        # regionType="global" on CN so launch_google_search shows up in the
+        # gesture/shortcut function list ("Google Ассистент"). The list is
+        # built by the framework, not by the Settings/SecurityCore app, so
+        # this is the only place that gate lives.
+        method_funcs=[(["ShortcutFunctionManager.smali"],
+                       patch_shortcut_region_gate)],
     )
     # Step 4g: Smali-patch services.jar (signature checks -> XdConfig/void
     # when DSV, always: secure-flag bypass incl. brand-new
