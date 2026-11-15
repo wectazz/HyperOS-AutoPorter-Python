@@ -642,6 +642,69 @@ def patch_voice_bgstart(text: str) -> tuple:
     if not text.endswith("\n"):
         text += "\n"
     return text + VOICE_BGSTART_HELPERS, 1
+
+
+def patch_voice_assistant_to_google(text: str) -> tuple:
+    """MiuiSingleKeyObserver.updateFunction(): the gesture-settings page
+    (SecurityCore f2/j.onPreferenceChange) writes
+    long_press_power_key = launch_voice_assistant (XiaoAI) on CN; this port
+    has no XiaoAI long-press (isSupportXiaoaiLongPressPowerKeyTalk=false), so
+    the page shows off and the key does nothing. Whoever writes that value,
+    rewrite it to launch_google_search (it starts whatever assistant is
+    currently selected — Gemini or Claude — through startAssist) and clear
+    long_press_power_launch_xiaoai. The observer re-reads the setting after
+    the write, sees launch_google_search and leaves it alone.
+    Idempotent; returns (text, 0) when the anchor is absent."""
+    marker = ".method private updateFunction(Ljava/lang/String;)V"
+    start = text.find(marker)
+    if start < 0:
+        return text, 0
+    end = text.find(".end method", start)
+    if end < 0:
+        return text, 0
+    block = text[start:end]
+    if "launch_google_search" in block:
+        return text, 1  # already patched
+    if "    .registers 5\n" not in block:
+        return text, 0
+    block = block.replace("    .registers 5\n", "    .registers 7\n", 1)
+    if block.count("    :goto_1a\n") != 1:
+        return text, 0
+    insert = (
+        "    :goto_1a\n"
+        "\n"
+        "    const-string/jumbo v2, \"long_press_power_key\"\n"
+        "\n"
+        "    invoke-virtual {v2, p1}, Ljava/lang/Object;->equals(Ljava/lang/Object;)Z\n"
+        "\n"
+        "    move-result v2\n"
+        "\n"
+        "    if-eqz v2, :cond_skip_voice\n"
+        "\n"
+        "    const-string/jumbo v2, \"launch_voice_assistant\"\n"
+        "\n"
+        "    invoke-virtual {v2, v0}, Ljava/lang/Object;->equals(Ljava/lang/Object;)Z\n"
+        "\n"
+        "    move-result v2\n"
+        "\n"
+        "    if-eqz v2, :cond_skip_voice\n"
+        "\n"
+        "    iget v3, p0, Lcom/android/server/policy/MiuiSingleKeyObserver;->mCurrentUserId:I\n"
+        "\n"
+        "    const-string/jumbo v2, \"long_press_power_launch_xiaoai\"\n"
+        "\n"
+        "    const/4 v4, 0x0\n"
+        "\n"
+        "    invoke-static {v1, v2, v4, v3}, Landroid/provider/Settings$System;->putIntForUser(Landroid/content/ContentResolver;Ljava/lang/String;II)Z\n"
+        "\n"
+        "    const-string/jumbo v0, \"launch_google_search\"\n"
+        "\n"
+        "    invoke-static {v1, p1, v0, v3}, Landroid/provider/Settings$System;->putStringForUser(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;I)Z\n"
+        "\n"
+        "    :cond_skip_voice\n"
+    )
+    block = block.replace("    :goto_1a\n", insert, 1)
+    return text[:start] + block + text[end:], 1
 # Fullscreen-AOD catch patch (step 4f, miui-services.jar only, gated by
 # --aod-fullscreen like the duchamp.xml flag — NOT dsv-gated, it's
 # functional). Tuples: (target basenames, previous exception, anchor
@@ -7141,7 +7204,8 @@ def main() -> None:
         catch_patches=aod_catch,
         # Background activity start for third-party assistants (MIUIOP
         # 10021) — global only, empty on CN.
-        method_funcs=voice_bgstart or None,
+        method_funcs=voice_bgstart + [(["MiuiSingleKeyObserver.smali"],
+                                      patch_voice_assistant_to_google)],
     )
     # Step 4f2: Smali-patch miui-framework.jar (keyboard strings + the
     # shortcut region gate). Always, both modes.
