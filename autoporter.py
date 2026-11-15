@@ -7191,6 +7191,13 @@ def main() -> None:
     # Background activity start (MIUIOP 10021) exemption for third-party
     # assistants: BOTH regions — the check is not region-gated.
     voice_bgstart = [(["ActivityStarterImpl.smali"], patch_voice_bgstart)]
+    # XiaoAI -> Google rewrite: CN only — launch_voice_assistant is the CN
+    # assistant function, global writes launch_google_search directly.
+    if region == "CN":
+        voice_bgstart.append((["MiuiSingleKeyObserver.smali"],
+                              patch_voice_assistant_to_google))
+    else:
+        print("XiaoAI->Google gesture rewrite skipped on global.\n")
     patch_jar_smali(
         patch_root / "system_ext" / "framework" / "miui-services.jar",
         "miui-services", miui_methods, [],
@@ -7200,10 +7207,7 @@ def main() -> None:
         + keyboard_replace_rules(["InputMethodManagerServiceImpl.smali"])
         + MIUI_SERVICES_DRM_REPLACE_PATCHES,
         catch_patches=aod_catch,
-        # Background activity start for third-party assistants (MIUIOP
-        # 10021) — global only, empty on CN.
-        method_funcs=voice_bgstart + [(["MiuiSingleKeyObserver.smali"],
-                                      patch_voice_assistant_to_google)],
+        method_funcs=voice_bgstart,
     )
     # Step 4f2: Smali-patch miui-framework.jar (keyboard strings + the
     # shortcut region gate). Always, both modes.
