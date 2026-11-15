@@ -7128,13 +7128,8 @@ def main() -> None:
     if not aod_catch:
         print("Fullscreen-AOD jar catch skipped (--aod-fullscreen false).\n")
     # Background activity start (MIUIOP 10021) exemption for third-party
-    # assistants: GLOBAL only. On CN the expected assistant is XiaoAI/GSA
-    # (both system packages, exempt anyway), so MIUI's restriction is kept
-    # as-is there.
-    voice_bgstart = ([(["ActivityStarterImpl.smali"], patch_voice_bgstart)]
-                     if region != "CN" else [])
-    if not voice_bgstart:
-        print("Assistant bg-start (10021) exemption skipped on CN.\n")
+    # assistants: BOTH regions — the check is not region-gated.
+    voice_bgstart = [(["ActivityStarterImpl.smali"], patch_voice_bgstart)]
     patch_jar_smali(
         patch_root / "system_ext" / "framework" / "miui-services.jar",
         "miui-services", miui_methods, [],
@@ -7170,16 +7165,21 @@ def main() -> None:
     # boot-keep fix).
     # NOTE: services.jar lives in system/system (AOSP location), NOT in
     # system_ext like miui-services.jar (proven by CI: absent under system_ext).
+    # Voice-interaction boot keep: CN only per request (global launches keep
+    # MIUI's behavior).
+    voice_keep = (SERVICES_VOICE_KEEP_REPLACE_PATCHES
+                  if region == "CN" else [])
+    if not voice_keep:
+        print("voice_interaction_service boot-keep skipped on global.\n")
     patch_jar_smali(
         patch_root / "system" / "system" / "framework" / "services.jar",
         "services", svc_methods, [],
         BASE_DIR / "smali_work" / "services",
         start_patches=SERVICES_START_PATCHES,
         new_method_patches=SERVICES_NEW_METHODS,
-        # Functional, both modes: keep voice_interaction_service across boot
-        # (the ROM clears it while the user is still locked) + port vibrator.
-        replace_patches=(vibrator_replace
-                         + SERVICES_VOICE_KEEP_REPLACE_PATCHES) or None,
+        # Keep voice_interaction_service across boot (the ROM clears it while
+        # the user is still locked) + port vibrator.
+        replace_patches=(vibrator_replace + voice_keep) or None,
     )
 
     # Step 4g2: Smali-patch APKs (extended keyboard). Always, both modes;
