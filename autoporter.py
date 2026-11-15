@@ -1820,8 +1820,6 @@ SYSTEM_PROP_APPEND = [
     "# Optimized & Safe Dex2oat",
     "dalvik.vm.dex2oat-filter=speed",
     "dalvik.vm.image-dex2oat-filter=speed",
-    "dalvik.vm.dex2oat-threads=4",
-    "dalvik.vm.boot-dex2oat-threads=4",
     "pm.dexopt.bg-dexopt=speed",
     "ro.sys.fw.bg_apps_limit=32",
     "ro.config.sdha_apps_bg_max=64",
