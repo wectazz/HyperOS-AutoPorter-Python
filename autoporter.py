@@ -1863,6 +1863,8 @@ PIF_SEPOLICY_MARKER = "; OemPorts10T-PIF (Danda)"
 # (source under pif/, destination under the build tree's system partition, mode)
 PIF_SYSTEM_COPY = [
     ("system/bin/pif-updater", "system/system/bin/pif-updater", 0o755),
+    ("system/bin/curl", "system/system/bin/curl", 0o755),
+    ("system/bin/curl-real", "system/system/bin/curl-real", 0o755),
     ("system/bin/resetprop", "system/system/bin/resetprop", 0o755),
     ("system/bin/sensitiveprops.sh", "system/system/bin/sensitiveprops.sh", 0o755),
     ("system/etc/init/oemports10t_pif.rc",
@@ -1879,12 +1881,13 @@ PIF_VENDOR_COPY = [
     ("vendor/etc/oemports10t.utils", "vendor/etc/oemports10t.utils", 0o644),
     ("vendor/etc/sig.kys", "vendor/etc/sig.kys", 0o644),
 ]
-# The updater shells out to curl (AOSP has no curl), so the baked PIF.apk is
-# used as-is. fenrir's LK already reports locked/green, so no bootloader or
-# keybox spoof (Fiqih: "no need spoof bootloader/keybox if uses fenrir").
+# curl + curl-real are shipped in system/bin (the updater shells out to
+# curl, which AOSP lacks), so autoupdate is on. fenrir's LK already reports
+# locked/green, so no bootloader or keybox spoof (Fiqih: "no need spoof
+# bootloader/keybox if uses fenrir").
 PIF_PROPS = [
     "persist.sys.oemports10t.utils-debug=false",
-    "persist.sys.oemports10t.utils.pif.autoupdate=false",
+    "persist.sys.oemports10t.utils.pif.autoupdate=true",
     "persist.sys.oemports10t.utils.bootloader=false",
     "persist.sys.oemports10t.utils.fingerprint=true",
 ]
