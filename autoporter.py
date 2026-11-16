@@ -1826,15 +1826,13 @@ PRODUCT_PROP_APPEND = [
     "ro.custom.build.name=Stable | by wectazz",
 ]
 # CN-only extras (region == "CN"): app-uninstall support, Setup Wizard
-# shortcuts and the camera palm-gesture emoji. Xiaomi's global build ships
-# the misspelled "emojl" key, so keep both spellings for the camera HAL.
+# shortcuts and the camera palm-gesture emoji.
 CN_ONLY_PROP_APPEND = [
     "ro.miui.cota_app_del_support=true",
     "setupwizard.feature.enable_quick_start_flow=true",
     "setupwizard.feature.enable_restore_anytime=true",
     "setupwizard.feature.enable_quick_enhanced_biometrics_flow=true",
     "persist.vendor.camera.gesture.emoji.support=1",
-    "persist.vendor.camera.gesture.emojl.support=1",
 ]
 SYSTEM_PROP_APPEND = [
     "ro.control_privapp_permissions=",
