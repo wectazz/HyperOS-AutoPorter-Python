@@ -1851,6 +1851,52 @@ SYSTEM_PROP_APPEND = [
 SYSTEM_EXT_PROP_APPEND = [
     "ro.miui.ui.font.animation=enable",
 ]
+
+# --- Danda OemPorts10T-PIF (vendored under pif/, fenrir variant only) ------
+# Framework-level Play Integrity Fix: keystore smali hooks + a native
+# property virtualizer. Files come from the vendored snapshot (pif/NOTICE.md
+# records the source commits). The framework hooks are applied in step 4e,
+# see PIF_HOOK_FUNCS below.
+PIF_DIR = BASE_DIR / "pif"
+PIF_CLASSES_DEX = PIF_DIR / "classes.dex"
+PIF_SEPOLICY_MARKER = "; OemPorts10T-PIF (Danda)"
+# (source under pif/, destination under the build tree's system partition, mode)
+PIF_SYSTEM_COPY = [
+    ("system/bin/pif-updater", "system/system/bin/pif-updater", 0o755),
+    ("system/bin/resetprop", "system/system/bin/resetprop", 0o755),
+    ("system/bin/sensitiveprops.sh", "system/system/bin/sensitiveprops.sh", 0o755),
+    ("system/etc/init/oemports10t_pif.rc",
+     "system/system/etc/init/oemports10t_pif.rc", 0o644),
+    ("system/etc/pif.json", "system/system/etc/pif.json", 0o644),
+    ("system/lib/liboemports_pif.so",
+     "system/system/lib/liboemports_pif.so", 0o644),
+    ("system/lib64/liboemports_pif.so",
+     "system/system/lib64/liboemports_pif.so", 0o644),
+]
+# (source under pif/, destination under the stock vendor tree, mode)
+PIF_VENDOR_COPY = [
+    ("vendor/app/PIF.apk", "vendor/app/PIF.apk", 0o644),
+    ("vendor/etc/oemports10t.utils", "vendor/etc/oemports10t.utils", 0o644),
+    ("vendor/etc/sig.kys", "vendor/etc/sig.kys", 0o644),
+]
+# The updater shells out to curl (AOSP has no curl), so the baked PIF.apk is
+# used as-is. fenrir's LK already reports locked/green, so no bootloader or
+# keybox spoof (Fiqih: "no need spoof bootloader/keybox if uses fenrir").
+PIF_PROPS = [
+    "persist.sys.oemports10t.utils-debug=false",
+    "persist.sys.oemports10t.utils.pif.autoupdate=false",
+    "persist.sys.oemports10t.utils.bootloader=false",
+    "persist.sys.oemports10t.utils.fingerprint=true",
+]
+# Types referenced by pif_sepolicy.cil; if the shipped policy set lacks one,
+# the whole CIL block is skipped (a bad .cil = bootloop, secilc is fatal).
+PIF_CIL_TYPES = [
+    "pif_updater", "pif_updater_exec", "init", "file_type", "dev_type",
+    "fs_type", "domain", "shell_exec", "toolbox_exec", "vendor_toolbox_exec",
+    "service_manager_type", "netd", "system_server", "power_service",
+    "mount_service", "property_type", "kernel", "gmscore_app",
+    "system_data_file", "untrusted_app", "priv_app",
+]
 # Computility levels (hos4/hos4_gl, either mode): written into
 # product/etc/build.prop. The keys already exist in stock build.prop, so
 # _apply_prop_entries() replaces them in place (no append, no dupes).
@@ -1968,6 +2014,127 @@ def apply_selinux_keystore_rules(build_root: Path, stock_root: Path) -> None:
         return
     cil.write_text(text.rstrip("\n") + "\n" + "\n".join(SELINUX_KEYSTORE_RULES) + "\n")
     print(f"  appended {len(SELINUX_KEYSTORE_RULES) - 1} rule(s) to {cil}\n")
+
+
+def apply_danda_pif(build_root: Path, stock_root: Path, variant: str) -> None:
+    """Bake the Danda OemPorts10T-PIF payload into the build tree (fenrir
+    variant only): system/vendor files, pif.json, props, selinux CIL +
+    file_contexts, and removal of the boot-framework.* precompiled artifacts
+    so ART actually loads the patched framework.jar. The keystore smali
+    hooks are applied in the framework.jar step (PIF_HOOK_FUNCS). Missing
+    sources only warn; a policy set that lacks a referenced type skips the
+    CIL + rc (a bad .cil is a fatal secilc failure = bootloop)."""
+    print("=== Applying Danda OemPorts10T-PIF ===")
+    if variant != "fenrir":
+        print("  fenrir variant only, skip\n")
+        return
+    if not PIF_DIR.is_dir():
+        print(f"  [missing, skip] {PIF_DIR}\n")
+        return
+
+    # 1. payload files
+    copied = 0
+    for entries, root in ((PIF_SYSTEM_COPY, build_root),
+                          (PIF_VENDOR_COPY, stock_root)):
+        for src_rel, dest_rel, mode in entries:
+            src = PIF_DIR / src_rel
+            if not src.is_file():
+                print(f"  [missing, skip] {src_rel}")
+                continue
+            dest = root / dest_rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            dest.chmod(mode)
+            copied += 1
+    print(f"  copied {copied} payload file(s)")
+
+    # 2. public.libraries.txt (preloads the native virtualizer into zygote)
+    libs = build_root / "system" / "system" / "etc" / "public.libraries.txt"
+    if libs.is_file():
+        text = libs.read_text()
+        if "liboemports_pif.so" not in text:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            libs.write_text(text + "liboemports_pif.so\n")
+            print("  public.libraries.txt: +liboemports_pif.so")
+    else:
+        print(f"  [missing, skip] {libs}")
+
+    # 3. props
+    prop = build_root / PRODUCT_BUILD_PROP
+    if prop.is_file():
+        _apply_prop_entries(prop, PIF_PROPS)
+        print(f"  {PRODUCT_BUILD_PROP}: +{len(PIF_PROPS)} PIF props")
+    else:
+        print(f"  [missing, skip] {prop}")
+
+    # 4. remove stale precompiled boot artifacts (Danda README)
+    fw_dir = build_root / "system" / "system" / "framework"
+    removed = 0
+    if fw_dir.is_dir():
+        for p in sorted(fw_dir.glob("boot-framework.*")):
+            if p.is_file():
+                p.unlink()
+                removed += 1
+        # the compiled boot image lives in framework/arm64/ (art/oat/vdex)
+        for p in sorted((fw_dir / "arm64").glob("boot-framework.*")):
+            if p.is_file():
+                p.unlink()
+                removed += 1
+        for p in sorted((fw_dir / "oat").glob("*/boot-framework.*")):
+            if p.is_file():
+                p.unlink()
+                removed += 1
+    print(f"  removed {removed} boot-framework.* artifact(s)")
+
+    # 5. selinux file contexts (plat_file_contexts uses /system/bin paths)
+    fc = build_root / "system" / "system" / "etc" / "selinux" / "plat_file_contexts"
+    fc_src = PIF_DIR / "sepolicy" / "pif_file_contexts"
+    if fc.is_file() and fc_src.is_file():
+        text = fc.read_text()
+        if "pif_updater_exec" not in text:
+            fc.write_text(text.rstrip("\n") + "\n"
+                          + fc_src.read_text().rstrip("\n") + "\n")
+            print("  plat_file_contexts: +pif_updater_exec labels")
+    else:
+        print(f"  [missing, skip] {fc}")
+
+    # 6. selinux CIL (vendor_sepolicy.cil, same file the keystore rules use)
+    cil_src = PIF_DIR / "sepolicy" / "pif_sepolicy.cil"
+    vendor_selinux = build_root / "vendor" / "etc" / "selinux"
+    if not vendor_selinux.is_dir():
+        vendor_selinux = stock_root / "vendor" / "etc" / "selinux"
+    cil = vendor_selinux / "vendor_sepolicy.cil"
+    if not (cil.is_file() and cil_src.is_file()):
+        print(f"  [missing, skip] {cil}\n")
+        return
+    text = cil.read_text()
+    if PIF_SEPOLICY_MARKER in text:
+        print("  vendor_sepolicy.cil: PIF rules already applied\n")
+        return
+    # The PIF CIL declares pif_updater/pif_updater_exec itself, so seed the
+    # type pool with it before checking the referenced types.
+    combined = cil_src.read_text()
+    for root in {build_root, stock_root}:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("etc/selinux/*.cil"):
+            if path.is_file() and not path.is_symlink():
+                combined += path.read_text()
+    missing = [t for t in PIF_CIL_TYPES
+               if f"(type {t})" not in combined
+               and f"(typeattribute {t})" not in combined]
+    if missing:
+        print(f"  [warn] policy set lacks types {missing}; skip PIF CIL + rc "
+              f"(avoids a fatal secilc failure)")
+        rc = build_root / "system" / "system" / "etc" / "init" / "oemports10t_pif.rc"
+        if rc.is_file():
+            rc.unlink()
+        print()
+        return
+    cil.write_text(text.rstrip("\n") + "\n\n" + PIF_SEPOLICY_MARKER + "\n"
+                   + cil_src.read_text().rstrip("\n") + "\n")
+    print("  vendor_sepolicy.cil: +PIF rules\n")
 
 
 def apply_vendor_build_prop(stock_root: Path) -> None:
@@ -4503,6 +4670,231 @@ def check_dex_blob(path: Path, what: str) -> None:
         magic = f.read(8)
     if not magic.startswith(b"dex\n"):
         raise RuntimeError(f"{what} produced a corrupt dex (bad magic): {path}")
+
+
+# --- Danda PIF framework hooks (fenrir only) -------------------------------
+# Ported from framework_patcher/patchframework.sh: inject OemPorts10TUtils
+# calls into Instrumentation.newApplication (both overloads),
+# KeyStore2.deleteKey/getKeyEntry and KeyStoreSecurityLevel.generateKey.
+# All payloads are register-extracted from the method, so hos3/hos4 register
+# layouts don't matter. The PIF classes live in a separate dex added by
+# pif_add_framework_dex() (the framework dexes are at the 64K limits).
+PIF_UTILS = "Lcom/android/internal/util/danda/OemPorts10TUtils;"
+
+
+def _pif_method_block(text: str, sig: str):
+    """Return (start, end, block) for the .method whose header contains sig."""
+    m = re.search(rf"(?m)^\.method[^\n]*{re.escape(sig)}[^\n]*\n", text)
+    if not m:
+        return None
+    start = m.start()
+    endm = re.search(r"(?m)^\.end method\s*$", text[start:])
+    if not endm:
+        return None
+    end = start + endm.end()
+    return start, end, text[start:end]
+
+
+def _pif_reg(block: str, name: str, last: bool = False):
+    """Register holding a named local/param (locals preferred, like Danda).
+    With last=True take the final .local match (generateKey has both the
+    p3 param and the v4 local called "args")."""
+    loc = re.findall(
+        rf'(?m)^\s*\.local\s+([vp]\d+)\s*,\s*"{re.escape(name)}"', block)
+    if loc:
+        return loc[-1] if last else loc[0]
+    m = re.search(
+        rf'(?m)^\s*\.param\s+([vp]\d+)\s*,\s*"{re.escape(name)}"', block)
+    return m.group(1) if m else None
+
+
+def _pif_lambda_reg(block: str, owner: str):
+    m = re.search(
+        rf"(?m)^\s*new-instance\s+([vp]\d+),\s*L{re.escape(owner)}"
+        rf"\$\$ExternalSyntheticLambda\d+;", block)
+    return m.group(1) if m else None
+
+
+def _pif_insert_before(block: str, anchor: str, payload: str):
+    m = re.search(anchor, block, re.M)
+    if not m:
+        return None
+    return block[:m.start()] + payload + block[m.start():]
+
+
+def pif_patch_instrumentation(text: str) -> tuple:
+    """Instrumentation.newApplication(Class/ClassLoader): run the PIF init
+    right before the final return-object (app already attached)."""
+    count = 0
+    for sig in ("newApplication(Ljava/lang/Class;",
+                "newApplication(Ljava/lang/ClassLoader;"):
+        found = _pif_method_block(text, sig)
+        if not found:
+            continue
+        start, end, block = found
+        if f"{PIF_UTILS}->onNewApplication" in block:
+            continue
+        m = re.search(r"invoke-\S+ \{\w+, ([vp]\d+)\}, "
+                      r"Landroid/app/Application;->attach"
+                      r"\(Landroid/content/Context;\)V", block)
+        if not m:
+            print(f"  [warn] PIF: no attach() anchor in {sig}")
+            continue
+        idx = block.rfind("\n    return-object")
+        if idx < 0:
+            print(f"  [warn] PIF: no return-object in {sig}")
+            continue
+        payload = (f"\n    invoke-static {{{m.group(1)}}}, {PIF_UTILS}"
+                   f"->onNewApplication(Landroid/content/Context;)V\n")
+        block = block[:idx] + payload + block[idx:]
+        text = text[:start] + block + text[end:]
+        count += 1
+    return text, count
+
+
+def pif_patch_keystore2(text: str) -> tuple:
+    """KeyStore2.deleteKey/getKeyEntry hooks."""
+    count = 0
+    found = _pif_method_block(
+        text, "deleteKey(Landroid/system/keystore2/KeyDescriptor;)")
+    if found:
+        start, end, block = found
+        if f"{PIF_UTILS}->onDeleteKey" not in block:
+            desc = _pif_reg(block, "descriptor") or "p1"
+            payload = (f"    invoke-static {{{desc}}}, {PIF_UTILS}"
+                       f"->onDeleteKey(Landroid/system/keystore2/KeyDescriptor;)V\n\n")
+            new = _pif_insert_before(
+                block,
+                r"(?m)^\s*new-instance\s+\w+,\s*Landroid/security/KeyStore2"
+                r"\$\$ExternalSyntheticLambda", payload)
+            if new:
+                text = text[:start] + new + text[end:]
+                count += 1
+            else:
+                print("  [warn] PIF: no deleteKey lambda anchor")
+    found = _pif_method_block(
+        text, "getKeyEntry(Landroid/system/keystore2/KeyDescriptor;)")
+    if found:
+        start, end, block = found
+        if f"{PIF_UTILS}->onGetKeyEntry" not in block:
+            lam = _pif_lambda_reg(block, "android/security/KeyStore2")
+            desc = _pif_reg(block, "descriptor") or "p1"
+            if lam:
+                payload = (
+                    f"    invoke-static {{p0, {lam}, {desc}}}, {PIF_UTILS}"
+                    f"->onGetKeyEntry(Ljava/lang/Object;Ljava/lang/Object;"
+                    f"Landroid/system/keystore2/KeyDescriptor;)"
+                    f"Landroid/system/keystore2/KeyEntryResponse;\n\n"
+                    f"    move-result-object {desc}\n\n"
+                    f"    if-eqz {desc}, :cond_pif_skip\n\n"
+                    f"    return-object {desc}\n\n"
+                    f"    :cond_pif_skip\n\n")
+                new = _pif_insert_before(
+                    block,
+                    r"(?m)^\s*invoke-virtual \{p0, \w+\}, "
+                    r"Landroid/security/KeyStore2;->handleRemoteExceptionWithRetry",
+                    payload)
+                if new:
+                    text = text[:start] + new + text[end:]
+                    count += 1
+                else:
+                    print("  [warn] PIF: no getKeyEntry retry anchor")
+            else:
+                print("  [warn] PIF: no getKeyEntry lambda register")
+    return text, count
+
+
+def pif_patch_keystore_level(text: str) -> tuple:
+    """KeyStoreSecurityLevel.generateKey hook (the attestation chain)."""
+    found = _pif_method_block(
+        text, "generateKey(Landroid/system/keystore2/KeyDescriptor;")
+    if not found:
+        return text, 0
+    start, end, block = found
+    if f"{PIF_UTILS}->genCertificate" in block:
+        return text, 0
+    lam = _pif_lambda_reg(block, "android/security/KeyStoreSecurityLevel")
+    desc = _pif_reg(block, "descriptor")
+    args = _pif_reg(block, "args", last=True)
+    rets = re.findall(r"(?m)^\s*return-object\s+([vp]\d+)\s*$", block)
+    if not (lam and desc and args and rets):
+        print("  [warn] PIF: generateKey registers not found, skip")
+        return text, 0
+    ret = rets[-1]
+    payload = (
+        f"    invoke-static {{p0, {lam}, {desc}, {args}}}, {PIF_UTILS}"
+        f"->genCertificate(Ljava/lang/Object;Ljava/lang/Object;"
+        f"Landroid/system/keystore2/KeyDescriptor;Ljava/util/Collection;)"
+        f"Landroid/system/keystore2/KeyMetadata;\n\n"
+        f"    move-result-object {ret}\n\n"
+        f"    if-eqz {ret}, :cond_pif_skip\n\n"
+        f"    return-object {ret}\n\n"
+        f"    :cond_pif_skip\n\n")
+    new = _pif_insert_before(
+        block,
+        r"(?m)^\s*invoke-direct \{p0, \w+\}, "
+        r"Landroid/security/KeyStoreSecurityLevel;"
+        r"->(?:handleExceptions|retryBusyException)",
+        payload)
+    if not new:
+        print("  [warn] PIF: no generateKey retry anchor")
+        return text, 0
+    return text[:start] + new + text[end:], 1
+
+
+PIF_HOOK_FUNCS = [
+    (["Instrumentation.smali"], pif_patch_instrumentation),
+    (["KeyStore2.smali"], pif_patch_keystore2),
+    (["KeyStoreSecurityLevel.smali"], pif_patch_keystore_level),
+]
+
+
+def pif_add_framework_dex(jar_path: Path) -> None:
+    """Append the prebuilt PIF dex as classesN.dex (Danda ships it as a
+    separate dex: the framework dexes sit at the 64K method/field limits)."""
+    if not PIF_CLASSES_DEX.is_file():
+        print(f"  [warn] PIF dex missing: {PIF_CLASSES_DEX}")
+        return
+    with zipfile.ZipFile(jar_path) as zin:
+        infos = zin.infolist()
+        blobs = {i.filename: zin.read(i.filename) for i in infos}
+    # A patched dex references the class, so a byte search is a false
+    # positive. Ask baksmali for the class definitions instead.
+    java = shutil.which("java")
+    baksmali_jar = TOOLS_DIR / "baksmali.jar"
+    if java and baksmali_jar.is_file():
+        tmp = jar_path.with_name(".pif_check.dex")
+        try:
+            for n, b in blobs.items():
+                if not n.endswith(".dex"):
+                    continue
+                tmp.write_bytes(b)
+                proc = subprocess.run(
+                    [java, "-jar", str(baksmali_jar), "list", "classes",
+                     "--api", "35", str(tmp)],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                if ("Lcom/android/internal/util/danda/OemPorts10TUtils;"
+                        in proc.stdout):
+                    print("  PIF dex already present, skip")
+                    return
+        finally:
+            tmp.unlink(missing_ok=True)
+    dex_re = re.compile(r"classes(\d*)\.dex")
+    nums = [int(m.group(1) or 1) for n in blobs
+            if (m := dex_re.fullmatch(n))]
+    name = f"classes{max(nums) + 1}.dex"
+    data = PIF_CLASSES_DEX.read_bytes()
+    if len(data) < 100 or not data.startswith(b"dex\n"):
+        raise RuntimeError(f"PIF dex is corrupt: {PIF_CLASSES_DEX}")
+    info = zipfile.ZipInfo(name)
+    info.compress_type = zipfile.ZIP_STORED
+    tmp = jar_path.with_name(jar_path.name + ".new")
+    with zipfile.ZipFile(tmp, "w") as zout:
+        for i in infos:
+            zout.writestr(i, blobs[i.filename])
+        zout.writestr(info, data)
+    os.replace(tmp, jar_path)
+    print(f"  {jar_path.name}: +{name} ({len(data)} bytes, PIF classes)")
 
 
 def patch_jar_smali(jar_path: Path, dsv_key: str, method_patches, insert_patches,
@@ -7184,6 +7576,11 @@ def main() -> None:
     # already ships a stale precompiled cache, so init compiles from .cil.
     apply_selinux_keystore_rules(patch_root, UNPACKED_STOCK_DIR)
 
+    # Danda framework PIF (fenrir variant only): payload files, pif.json,
+    # props, SELinux CIL/contexts, and removal of boot-framework.* so ART
+    # loads the patched framework.jar (the keystore hooks are added below).
+    apply_danda_pif(patch_root, UNPACKED_STOCK_DIR, args.variant)
+
     # Steps 4e-4g: jar smali patching. --dsv gates ONLY the
     # signature-verification lists (DSV = disable signature verification);
     # functional fixes always apply: secure-flag bypass, IS_MIUI
@@ -7195,14 +7592,21 @@ def main() -> None:
         print("DSV (disable signature verification) skipped (--dsv no); "
               "functional smali fixes still apply.\n")
     vibrator_replace = SERVICES_VIBRATOR_REPLACE_PATCHES if args.mode == "port" else []
-    if args.dsv == "yes":
-        # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig).
-        # Skipped whole with --dsv no (every framework rule is signature).
+    pif_enabled = args.variant == "fenrir"
+    if args.dsv == "yes" or pif_enabled:
+        # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig
+        # when DSV; Danda PIF keystore hooks on fenrir). With --dsv no only
+        # the functional PIF hooks run.
+        framework_jar = (patch_root / "system" / "system" / "framework"
+                         / "framework.jar")
         patch_jar_smali(
-            patch_root / "system" / "system" / "framework" / "framework.jar",
+            framework_jar,
             "framework", fw_methods, fw_inserts,
             BASE_DIR / "smali_work" / "framework",
+            method_funcs=PIF_HOOK_FUNCS if pif_enabled else None,
         )
+        if pif_enabled:
+            pif_add_framework_dex(framework_jar)
     # Step 4f: Smali-patch miui-services.jar (signature checks -> void when
     # DSV, always: secure-flag bypass at method start + IS_MIUI notification
     # fix + Baidu->Gboard keyboard strings + DrmBroadcast removal; gated by
