@@ -1878,7 +1878,6 @@ PIF_SYSTEM_COPY = [
     ("system/bin/sensitiveprops.sh", "system/system/bin/sensitiveprops.sh", 0o755),
     ("system/etc/init/oemports10t_pif.rc",
      "system/system/etc/init/oemports10t_pif.rc", 0o644),
-    ("system/etc/pif.json", "system/system/etc/pif.json", 0o644),
     ("system/lib/liboemports_pif.so",
      "system/system/lib/liboemports_pif.so", 0o644),
     ("system/lib64/liboemports_pif.so",

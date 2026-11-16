@@ -13,8 +13,6 @@ Framework-level Play Integrity Fix by Danda420.
 License: GPL-3.0 (see `LICENSE`).
 
 Local changes:
-- `system/etc/pif.json` is generated from `info.txt` (the native virtualizer reads
-  `/system/etc/pif.json`, the repo only ships the human-readable info snapshot).
 - `system/bin/curl` + `system/bin/curl-real` are a static arm64 curl (curl license,
   https://curl.se/docs/copyright.html) plus an Android DNS shim, taken from the
   local KernelSU module. `pif-updater` shells out to `curl`, which AOSP lacks,
