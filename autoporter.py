@@ -1801,6 +1801,7 @@ def signature_patch_lists(dsv: str) -> tuple:
 # (SAR layout, like the jars) — both trees alike.
 PRODUCT_BUILD_PROP = "product/etc/build.prop"
 SYSTEM_BUILD_PROP = "system/system/build.prop"
+SYSTEM_EXT_BUILD_PROP = "system_ext/etc/build.prop"
 DENSITY_PROP_KEYS = ["persist.miui.density_v2", "ro.sf.lcd_density"]
 PRODUCT_PROP_APPEND = [
     "ro.control_privapp_permissions=",
@@ -1811,6 +1812,17 @@ PRODUCT_PROP_APPEND = [
     "ro.miui.has_handy_mode_sf=1",
     "ro.miui.support.system.app.uninstall.v2=true",
     "ro.miui.product.home=com.miui.home",
+    # HOS4 feature gates (CN + global, both modes). The two
+    # computilityV2 cpulevel/gpulevel keys are deliberately NOT touched.
+    "persist.sys.multi_task.mask_blur_enable=true",
+    "persist.sys.feature.island.animation=true",
+    "persist.sys.feature.island.shader=true",
+    "feature.island.debug=true",
+    "persist.sys.translate.state.supportAiSubtitles=true",
+    "persist.sys.translate.state.supportVoiceTrans=true",
+    "ro.product.camera.livephoto.support=3",
+    "persist.sys.power_meter_enhanced=true",
+    "persist.vendor.battery.ai.predict=true",
     "ro.custom.build.name=Stable | by wectazz",
 ]
 SYSTEM_PROP_APPEND = [
@@ -1833,6 +1845,11 @@ SYSTEM_PROP_APPEND = [
     #"ro.adb.secure=0",
     #"ro.secure=0",
     #"ro.debuggable=1",
+]
+# ro.miui.ui.font.animation is hard-pinned to "disable" in
+# system_ext/etc/build.prop, so override it there (upsert, in place).
+SYSTEM_EXT_PROP_APPEND = [
+    "ro.miui.ui.font.animation=enable",
 ]
 # Computility levels (hos4/hos4_gl, either mode): written into
 # product/etc/build.prop. The keys already exist in stock build.prop, so
@@ -3497,11 +3514,12 @@ def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
 
 def apply_build_prop_tweaks(build_root: Path, density: int,
                             hyper_version: str, variant: str) -> None:
-    """product/system build.prop tweaks on the build tree (patch_root, both
-    modes): density keys in product, custom append blocks, computility
-    levels on hos4/hos4_gl (replaced in place — the keys already exist),
-    fenrir verified-boot props on the fenrir variant, and locale/host
-    normalization in both files. Missing files only warn."""
+    """product/system/system_ext build.prop tweaks on the build tree
+    (patch_root, both modes): density keys in product, custom append blocks,
+    computility levels on hos4/hos4_gl (replaced in place — the keys already
+    exist), fenrir verified-boot props on the fenrir variant, the
+    font-animation override in system_ext, and locale/host normalization in
+    product/system. Missing files only warn."""
     print("=== Applying build.prop tweaks ===")
     product_entries = ([f"{k}={density}" for k in DENSITY_PROP_KEYS]
                        + PRODUCT_PROP_APPEND)
@@ -3511,18 +3529,20 @@ def apply_build_prop_tweaks(build_root: Path, density: int,
     system_entries = list(SYSTEM_PROP_APPEND)
     system_entries += FENRIR_PROPS
     print(f"  verified-boot props (all variants): {len(FENRIR_PROPS)} entries")
-    jobs = [
-        (PRODUCT_BUILD_PROP, product_entries),
-        (SYSTEM_BUILD_PROP, system_entries),
-    ]
     tail = ["ro.product.locale=en-US", "ro.build.host=wectazz"]
-    for rel, entries in jobs:
+    jobs = [
+        (PRODUCT_BUILD_PROP, product_entries, tail),
+        (SYSTEM_BUILD_PROP, system_entries, tail),
+        (SYSTEM_EXT_BUILD_PROP, SYSTEM_EXT_PROP_APPEND, []),
+    ]
+    for rel, entries, extra in jobs:
         prop = build_root / rel
         if not prop.is_file():
             print(f"  [missing, skip] {rel}")
             continue
-        _apply_prop_entries(prop, entries + tail)
-        print(f"  {rel}: +{len(entries)} entries, locale=en-US, host=wectazz")
+        _apply_prop_entries(prop, entries + extra)
+        suffix = ", locale=en-US, host=wectazz" if extra else ""
+        print(f"  {rel}: +{len(entries)} entries{suffix}")
     print()
 
 
