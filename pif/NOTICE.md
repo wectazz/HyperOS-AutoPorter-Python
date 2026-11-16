@@ -13,6 +13,12 @@ Framework-level Play Integrity Fix by Danda420.
 License: GPL-3.0 (see `LICENSE`).
 
 Local changes:
+- `framework_patcher/PIF/classes.dex` patched locally for Android 17: `Field.set` on
+  `static final` `Build.*` fields throws `IllegalAccessException`, so `l5.l`/`l5.m`/`l5.n`
+  now resolve the field and pass it to a new `l5.s(Field, Object)` helper built on
+  `jdk.internal.misc.Unsafe` (`staticFieldBase`/`staticFieldOffset` + `putInt`/`putObject`).
+  Same approach as the device-proven module build (`m5.s`). Only `l5` differs; the other
+  189 classes are byte-identical, the dex keeps 190 classes (183,392 -> 183,540 bytes).
 - `system/bin/curl` + `system/bin/curl-real` are a static arm64 curl (curl license,
   https://curl.se/docs/copyright.html) plus an Android DNS shim, taken from the
   local KernelSU module. `pif-updater` shells out to `curl`, which AOSP lacks,
