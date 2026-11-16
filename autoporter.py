@@ -44,8 +44,8 @@ DEVICES = {
         "template_prefix": "duchamp_template",
         # HOS4 global stock fingerprint (current device: OS4.0.5.0.XPTCNXM).
         # Old HOS3 value was OS3.0.9.0.WNLMIXM (Android 16).
-        "fingerprint": ("google/akita_beta/akita:CANARY/ZP11.261016.008/" #google/akita_beta/akita:CANARY/ZP11.261016.008/16754936:user/release-keys
-                        "ZP11.261016.008/16754936:user/release-keys"),
+        "fingerprint": ("POCO/duchamp_global/duchamp:16/BP2A.250605.031.A3/" #google/akita_beta/akita:CANARY/ZP11.261016.008/16754936:user/release-keys
+                        "OS3.0.9.0.WNLMIXM:user/release-keys"),
     },
 }
 
