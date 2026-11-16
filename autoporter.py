@@ -1823,12 +1823,12 @@ PRODUCT_PROP_APPEND = [
     "ro.product.camera.livephoto.support=3",
     "persist.sys.power_meter_enhanced=true",
     "persist.vendor.battery.ai.predict=true",
+    "ro.miui.cota_app_del_support=true",
     "ro.custom.build.name=Stable | by wectazz",
 ]
-# CN-only extras (region == "CN"): app-uninstall support, Setup Wizard
-# shortcuts and the camera palm-gesture emoji.
+# CN-only extras (region == "CN"): Setup Wizard shortcuts and the camera
+# palm-gesture emoji (ro.miui.cota_app_del_support lives in the shared block).
 CN_ONLY_PROP_APPEND = [
-    "ro.miui.cota_app_del_support=true",
     "setupwizard.feature.enable_quick_start_flow=true",
     "setupwizard.feature.enable_restore_anytime=true",
     "setupwizard.feature.enable_quick_enhanced_biometrics_flow=true",
