@@ -1825,6 +1825,17 @@ PRODUCT_PROP_APPEND = [
     "persist.vendor.battery.ai.predict=true",
     "ro.custom.build.name=Stable | by wectazz",
 ]
+# CN-only extras (region == "CN"): app-uninstall support, Setup Wizard
+# shortcuts and the camera palm-gesture emoji. Xiaomi's global build ships
+# the misspelled "emojl" key, so keep both spellings for the camera HAL.
+CN_ONLY_PROP_APPEND = [
+    "ro.miui.cota_app_del_support=true",
+    "setupwizard.feature.enable_quick_start_flow=true",
+    "setupwizard.feature.enable_restore_anytime=true",
+    "setupwizard.feature.enable_quick_enhanced_biometrics_flow=true",
+    "persist.vendor.camera.gesture.emoji.support=1",
+    "persist.vendor.camera.gesture.emojl.support=1",
+]
 SYSTEM_PROP_APPEND = [
     "ro.control_privapp_permissions=",
     "ro.miui.has_gmscore=1",
@@ -3686,16 +3697,20 @@ def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
 
 
 def apply_build_prop_tweaks(build_root: Path, density: int,
-                            hyper_version: str, variant: str) -> None:
+                            hyper_version: str, variant: str,
+                            region: str) -> None:
     """product/system/system_ext build.prop tweaks on the build tree
     (patch_root, both modes): density keys in product, custom append blocks,
-    computility levels on hos4/hos4_gl (replaced in place — the keys already
-    exist), verified-boot props on both variants, the
-    font-animation override in system_ext, and locale/host normalization in
-    product/system. Missing files only warn."""
+    CN-only extras (region == "CN"), computility levels on hos4/hos4_gl
+    (replaced in place — the keys already exist), verified-boot props on both
+    variants, the font-animation override in system_ext, and locale/host
+    normalization in product/system. Missing files only warn."""
     print("=== Applying build.prop tweaks ===")
     product_entries = ([f"{k}={density}" for k in DENSITY_PROP_KEYS]
                        + PRODUCT_PROP_APPEND)
+    if region == "CN":
+        product_entries += CN_ONLY_PROP_APPEND
+        print(f"  CN-only props: {len(CN_ONLY_PROP_APPEND)} entries")
     if hyper_version in COMPUTILITY_VERSIONS:
         product_entries += COMPUTILITY_PROPS
         print(f"  hos4 computility levels: {len(COMPUTILITY_PROPS)} entries")
@@ -7503,7 +7518,7 @@ def main() -> None:
     # the build tree. Both modes. Order vs debloat is irrelevant (nothing
     # there touches build.prop).
     apply_build_prop_tweaks(patch_root, args.density, args.hyper_version,
-                            args.variant)
+                            args.variant, region)
 
     # Step 4c4b: stamp the device fingerprint over every build.prop
     # (both unpacked trees, both modes, always). On the fenrir variant the
