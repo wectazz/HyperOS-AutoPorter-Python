@@ -2046,6 +2046,31 @@ def apply_selinux_keystore_rules(build_root: Path, stock_root: Path) -> None:
     print(f"  appended {len(SELINUX_KEYSTORE_RULES) - 1} rule(s) to {cil}\n")
 
 
+def remove_boot_framework_artifacts(build_root: Path) -> int:
+    """Delete stale boot-framework.* precompiled images so ART loads the
+    patched framework.jar (DSV and/or PIF changes). Covers framework/,
+    framework/arm64/ and framework/oat/*/. No-op when absent; also drops
+    dangling symlinks. Returns the number removed."""
+    fw_dir = build_root / "system" / "system" / "framework"
+    if not fw_dir.is_dir():
+        print("  [warn] framework dir missing, skip boot-framework cleanup")
+        return 0
+    targets = list(fw_dir.glob("boot-framework.*"))
+    arm64 = fw_dir / "arm64"
+    if arm64.is_dir():
+        targets += list(arm64.glob("boot-framework.*"))
+    oat = fw_dir / "oat"
+    if oat.is_dir():
+        targets += list(oat.glob("*/boot-framework.*"))
+    removed = 0
+    for p in sorted(targets):
+        if p.is_file() or p.is_symlink():
+            p.unlink()
+            removed += 1
+    print(f"  removed {removed} boot-framework.* artifact(s)")
+    return removed
+
+
 def apply_danda_pif(build_root: Path, stock_root: Path, variant: str) -> None:
     """Bake the Danda OemPorts10T-PIF payload into the build tree (fenrir
     variant only): system/vendor files, pif.json, props, selinux CIL +
@@ -2099,23 +2124,7 @@ def apply_danda_pif(build_root: Path, stock_root: Path, variant: str) -> None:
         print(f"  [missing, skip] {prop}")
 
     # 4. remove stale precompiled boot artifacts (Danda README)
-    fw_dir = build_root / "system" / "system" / "framework"
-    removed = 0
-    if fw_dir.is_dir():
-        for p in sorted(fw_dir.glob("boot-framework.*")):
-            if p.is_file():
-                p.unlink()
-                removed += 1
-        # the compiled boot image lives in framework/arm64/ (art/oat/vdex)
-        for p in sorted((fw_dir / "arm64").glob("boot-framework.*")):
-            if p.is_file():
-                p.unlink()
-                removed += 1
-        for p in sorted((fw_dir / "oat").glob("*/boot-framework.*")):
-            if p.is_file():
-                p.unlink()
-                removed += 1
-    print(f"  removed {removed} boot-framework.* artifact(s)")
+    remove_boot_framework_artifacts(build_root)
 
     # 5. selinux file contexts (plat_file_contexts uses /system/bin paths)
     fc = build_root / "system" / "system" / "etc" / "selinux" / "plat_file_contexts"
@@ -7632,6 +7641,9 @@ def main() -> None:
         )
         if pif_enabled:
             pif_add_framework_dex(framework_jar)
+        # Any framework.jar change (DSV or PIF) invalidates the precompiled
+        # boot image; drop it so ART recompiles from the patched jar.
+        remove_boot_framework_artifacts(patch_root)
     # Step 4f: Smali-patch miui-services.jar (signature checks -> void when
     # DSV, always: secure-flag bypass at method start + IS_MIUI notification
     # fix + Baidu->Gboard keyboard strings + DrmBroadcast removal; gated by
