@@ -2087,11 +2087,14 @@ def apply_mi_ext_prop_transfer(build_root: Path) -> None:
     print(f"  moved {moved} prop(s), kept {skipped} excluded.\n")
 
 
-# Extra props for the fenrir variant, appended to system/system/build.prop.
+# Verified-boot props appended to system/system/build.prop on BOTH variants
+# (base and fenrir). The ro.boot.* values are normally supplied by the fenrir
+# LK cmdline (spoof_lock_state/force_green_state); keeping them here is a
+# harmless fallback for the base variant. vendor.boot.* keys are deliberately
+# absent: that namespace is set by vendor init only, build.prop values never
+# appear.
 FENRIR_PROPS = [
     "ro.boot.verifiedbootstate=green",
-    "vendor.boot.verifiedbootstate=green",
-    "vendor.boot.vbmeta.device_state=locked",
     "ro.boot.veritymode=enforcing",
     "ro.boot.vbmeta.device_state=locked",
     "ro.boot.flash.locked=1",
@@ -3517,7 +3520,7 @@ def apply_build_prop_tweaks(build_root: Path, density: int,
     """product/system/system_ext build.prop tweaks on the build tree
     (patch_root, both modes): density keys in product, custom append blocks,
     computility levels on hos4/hos4_gl (replaced in place — the keys already
-    exist), fenrir verified-boot props on the fenrir variant, the
+    exist), verified-boot props on both variants, the
     font-animation override in system_ext, and locale/host normalization in
     product/system. Missing files only warn."""
     print("=== Applying build.prop tweaks ===")
