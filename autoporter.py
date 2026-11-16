@@ -1959,6 +1959,23 @@ def apply_fingerprint(unpacked_roots: list, fingerprint: str) -> None:
         print(f"Fingerprint done: {stamped} key(s) in {files} file(s).\n")
 
 
+def ensure_build_fingerprint(prop: Path, fingerprint: str) -> None:
+    """Append the exact `ro.build.fingerprint` key only when it is absent.
+    Existing values — including every `ro.*.build.fingerprint` — are never
+    rewritten, so the ROM keeps its own per-partition fingerprints."""
+    if not prop.is_file():
+        print(f"  [warn] {prop.name} missing, skip fingerprint")
+        return
+    text = prop.read_text()
+    if re.search(r"(?m)^ro\.build\.fingerprint\s*=", text):
+        print("  ro.build.fingerprint present, left unchanged")
+        return
+    if text and not text.endswith("\n"):
+        text += "\n"
+    prop.write_text(text + f"ro.build.fingerprint={fingerprint}\n")
+    print("  ro.build.fingerprint added")
+
+
 # vendor/etc/build.prop tweaks (stock tree — vendor exists only in stock,
 # both modes): every ro.hwui.use_vulkan=* -> true, debug.renderengine.-
 # backend=* -> skiavkthreaded, and the enforce line is dropped.
@@ -7519,22 +7536,12 @@ def main() -> None:
     apply_build_prop_tweaks(patch_root, args.density, args.hyper_version,
                             args.variant, region)
 
-    # Step 4c4b: stamp the device fingerprint over every build.prop
-    # (both unpacked trees, both modes, always). On the fenrir variant the
-    # exact ro.build.fingerprint key is additionally ensured in
-    # system/system/build.prop (upsert — appended when absent).
-    apply_fingerprint([UNPACKED_PORT_DIR, UNPACKED_STOCK_DIR],
-                      DEVICES[args.device]["fingerprint"])
+    # Step 4c4b: leave every ro.*.build.fingerprint as the ROM ships it.
+    # On fenrir, only add the exact ro.build.fingerprint when missing;
+    # never rewrite an existing value (base trees are left untouched).
     if args.variant == "fenrir":
-        fenrir_prop = patch_root / SYSTEM_BUILD_PROP
-        if fenrir_prop.is_file():
-            _upsert_prop(fenrir_prop, "ro.build.fingerprint",
-                         DEVICES[args.device]["fingerprint"])
-            print("  fenrir: ro.build.fingerprint ensured in "
-                  "system/system/build.prop.\n")
-        else:
-            print("  [warn] system/system/build.prop missing, "
-                  "skip fenrir fingerprint.\n")
+        ensure_build_fingerprint(patch_root / SYSTEM_BUILD_PROP,
+                                 DEVICES[args.device]["fingerprint"])
 
     # Step 4c5: device_features overlay (committed duchamp/duchamp.xml over
     # the donor copy) + patch (AOD/doze/display/fps tweaks, fullscreen flag
