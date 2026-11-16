@@ -42,8 +42,10 @@ DEVICES = {
     "duchamp": {
         "codename": "duchamp",
         "template_prefix": "duchamp_template",
-        "fingerprint": ("POCO/duchamp_global/duchamp:16/BP2A.250605.031.A3/"
-                        "OS3.0.9.0.WNLMIXM:user/release-keys"),
+        # HOS4 global stock fingerprint (current device: OS4.0.5.0.XPTCNXM).
+        # Old HOS3 value was OS3.0.9.0.WNLMIXM (Android 16).
+        "fingerprint": ("POCO/duchamp_global/duchamp:17/CP2A.260605.016/"
+                        "OS4.0.5.0.XPTCNXM:user/release-keys"),
     },
 }
 
@@ -7521,20 +7523,18 @@ def main() -> None:
     # (both unpacked trees, both modes, always). On the fenrir variant the
     # exact ro.build.fingerprint key is additionally ensured in
     # system/system/build.prop (upsert — appended when absent).
-    # DEBUG: fingerprint replacement disabled for base AND fenrir.
-    # apply_fingerprint([UNPACKED_PORT_DIR, UNPACKED_STOCK_DIR],
-    #                   DEVICES[args.device]["fingerprint"])
-    # if args.variant == "fenrir":
-    #     fenrir_prop = patch_root / SYSTEM_BUILD_PROP
-    #     if fenrir_prop.is_file():
-    #         _upsert_prop(fenrir_prop, "ro.build.fingerprint",
-    #                      DEVICES[args.device]["fingerprint"])
-    #         print("  fenrir: ro.build.fingerprint ensured in "
-    #               "system/system/build.prop.\n")
-    #     else:
-    #         print("  [warn] system/system/build.prop missing, "
-    #               "skip fenrir fingerprint.\n")
-    print("  [debug] fingerprint replacement disabled (base/fenrir)\n")
+    apply_fingerprint([UNPACKED_PORT_DIR, UNPACKED_STOCK_DIR],
+                      DEVICES[args.device]["fingerprint"])
+    if args.variant == "fenrir":
+        fenrir_prop = patch_root / SYSTEM_BUILD_PROP
+        if fenrir_prop.is_file():
+            _upsert_prop(fenrir_prop, "ro.build.fingerprint",
+                         DEVICES[args.device]["fingerprint"])
+            print("  fenrir: ro.build.fingerprint ensured in "
+                  "system/system/build.prop.\n")
+        else:
+            print("  [warn] system/system/build.prop missing, "
+                  "skip fenrir fingerprint.\n")
 
     # Step 4c5: device_features overlay (committed duchamp/duchamp.xml over
     # the donor copy) + patch (AOD/doze/display/fps tweaks, fullscreen flag
@@ -7591,10 +7591,11 @@ def main() -> None:
     # already ships a stale precompiled cache, so init compiles from .cil.
     apply_selinux_keystore_rules(patch_root, UNPACKED_STOCK_DIR)
 
-    # Danda framework PIF (fenrir variant only): payload files, pif.json,
-    # props, SELinux CIL/contexts, and removal of boot-framework.* so ART
-    # loads the patched framework.jar (the keystore hooks are added below).
-    apply_danda_pif(patch_root, UNPACKED_STOCK_DIR, args.variant)
+    # Danda framework PIF (fenrir variant only) — DISABLED by request
+    # (2026-11-17): payload files, pif.json, props, SELinux CIL/contexts,
+    # boot-framework cleanup and the keystore hooks are all off. The
+    # implementation is kept for easy re-enable.
+    # apply_danda_pif(patch_root, UNPACKED_STOCK_DIR, args.variant)
 
     # Steps 4e-4g: jar smali patching. --dsv gates ONLY the
     # signature-verification lists (DSV = disable signature verification);
@@ -7607,7 +7608,9 @@ def main() -> None:
         print("DSV (disable signature verification) skipped (--dsv no); "
               "functional smali fixes still apply.\n")
     vibrator_replace = SERVICES_VIBRATOR_REPLACE_PATCHES if args.mode == "port" else []
-    pif_enabled = args.variant == "fenrir"
+    # Danda PIF is disabled (see the commented apply_danda_pif call above).
+    # Re-enable by restoring pif_enabled = args.variant == "fenrir".
+    pif_enabled = False
     if args.dsv == "yes" or pif_enabled:
         # Step 4e: Smali-patch framework.jar (signature checks -> XdConfig
         # when DSV; Danda PIF keystore hooks on fenrir). With --dsv no only
