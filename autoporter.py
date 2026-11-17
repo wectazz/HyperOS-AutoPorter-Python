@@ -42,9 +42,10 @@ DEVICES = {
     "duchamp": {
         "codename": "duchamp",
         "template_prefix": "duchamp_template",
-        # HOS4 global stock fingerprint (current device: OS4.0.5.0.XPTCNXM).
-        # Old HOS3 value was OS3.0.9.0.WNLMIXM (Android 16).
-        "fingerprint": ("POCO/duchamp_global/duchamp:16/BP2A.250605.031.A3/" #google/akita_beta/akita:CANARY/ZP11.261016.008/16754936:user/release-keys
+        # HOS3 global stock fingerprint (Android 16). Google does not accept
+        # an Android 17 duchamp fingerprint yet, so keep this one for Play
+        # Integrity and stamp it over every partition fingerprint.
+        "fingerprint": ("POCO/duchamp_global/duchamp:16/BP2A.250605.031.A3/"
                         "OS3.0.9.0.WNLMIXM:user/release-keys"),
     },
 }
@@ -2298,7 +2299,9 @@ def apply_mi_ext_prop_transfer(build_root: Path) -> None:
 # LK cmdline (spoof_lock_state/force_green_state); keeping them here is a
 # harmless fallback for the base variant. vendor.boot.* keys are deliberately
 # absent: that namespace is set by vendor init only, build.prop values never
-# appear.
+# appear. ro.secureboot.lockstate is also deliberately absent: init sets it
+# from bootconfig before build.prop is read (ro.* is write-once), so adding
+# it here only affects the Mi Unlock display, never Play Integrity.
 FENRIR_PROPS = [
     "ro.boot.verifiedbootstate=green",
     "ro.boot.veritymode=enforcing",
@@ -7545,9 +7548,13 @@ def main() -> None:
     apply_build_prop_tweaks(patch_root, args.density, args.hyper_version,
                             args.variant, region)
 
-    # Step 4c4b: leave every ro.*.build.fingerprint as the ROM ships it.
-    # On fenrir, only add the exact ro.build.fingerprint when missing;
-    # never rewrite an existing value (base trees are left untouched).
+    # Step 4c4b: stamp one device fingerprint over every
+    # ro.*.build.fingerprint in both unpacked trees. Port trees ship mixed
+    # identities (chagall/missi HOS4 + duchamp HOS3/HOS4); DroidGuard rejects
+    # that mismatch, so all partitions must agree. On fenrir the exact
+    # ro.build.fingerprint is additionally ensured when absent.
+    apply_fingerprint([UNPACKED_PORT_DIR, UNPACKED_STOCK_DIR],
+                      DEVICES[args.device]["fingerprint"])
     if args.variant == "fenrir":
         ensure_build_fingerprint(patch_root / SYSTEM_BUILD_PROP,
                                  DEVICES[args.device]["fingerprint"])
