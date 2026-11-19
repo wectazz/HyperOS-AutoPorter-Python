@@ -46,7 +46,7 @@ DEVICES = {
         # an Android 17 duchamp fingerprint yet, so keep this one for Play
         # Integrity and stamp it over every partition fingerprint.
         "fingerprint": ("POCO/duchamp_global/duchamp:16/BP2A.250605.031.A3/"
-                        "OS3.0.9.0.WNLMIXM:user/release-keys"),
+                        "OS3.0.10.0.WNLMIXM:user/release-keys"),
     },
 }
 
