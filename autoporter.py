@@ -122,7 +122,7 @@ def fetch_template_release(device: str, variant: str) -> Path:
 # Download URLs
 STOCK_URL_DUCHAMP = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
-    "OS3.0.9.0.WNLMIXM/duchamp_global-ota_full-OS3.0.9.0.WNLMIXM-user-16.0-20cd32d00e.zip"
+    "OS3.0.10.0.WNLMIXM/duchamp_global-ota_full-OS3.0.10.0.WNLMIXM-user-16.0-91604fa25b.zip"
 )
 PORT_URL = (
     "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/"
