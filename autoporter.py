@@ -387,6 +387,23 @@ MI_EXT_DROP_DIRS = ["mi_ext/system", "mi_ext/system_ext", "mi_ext/product/app"]
 # GMS permission XML removed from product on CN firmwares only (both modes,
 # not debloat-gated; global firmwares keep it).
 PRODUCT_GMS_PERMISSION = "product/etc/permissions/cn.google.services.xml"
+# Microsoft App Manager privapp permissions appended before </permissions>
+# in product's privapp-permissions-product.xml (CN firmwares only, both
+# modes, not debloat-gated).
+PRODUCT_PRIVAPP_PERMISSIONS = "product/etc/permissions/privapp-permissions-product.xml"
+PRODUCT_PRIVAPP_APP_MANAGER = """   <privapp-permissions package="com.microsoft.appmanager">
+      <permission name="android.permission.READ_PHONE_STATE" />
+      <permission name="android.permission.READ_PHONE_STATE" />
+      <permission name="android.permission.READ_PRIVILEGED_PHONE_STATE" />
+      <permission name="android.permission.READ_WALLPAPER_INTERNAL" />
+      <permission name="android.permission.MODIFY_AUDIO_ROUTING" />
+      <permission name="android.permission.CAPTURE_AUDIO_OUTPUT" />
+      <permission name="android.permission.CAPTURE_MEDIA_OUTPUT" />
+      <permission name="android.permission.REQUEST_COMPANION_PROFILE_COMPUTER" />
+      <permission name="android.permission.REQUEST_COMPANION_SELF_MANAGED" />
+      <permission name="android.permission.LOCAL_MAC_ADDRESS" />
+      <permission name="android.permission.MANAGE_WIFI_NETWORK_SELECTION" />
+   </privapp-permissions>"""
 # Global firmwares only: named entries moved from mi_ext/product/* into
 # product/* ((mi_ext source dir, product dest dir, [names]) — files are
 # moved, dirs merged recursively). CN firmwares keep MI_EXT_PRODUCT_MOVES.
@@ -3699,6 +3716,41 @@ def apply_init_rc_tweak(build_root: Path) -> None:
         return
     rc.write_text(text)
     print(f"  appended animationfix/fpsfix blocks to {INIT_RC}")
+
+
+def apply_privapp_permissions_product(build_root: Path, region: str) -> None:
+    """Append the com.microsoft.appmanager privapp permissions to
+    product/etc/permissions/privapp-permissions-product.xml before
+    </permissions> (CN firmwares only, both modes). Idempotent: skipped when
+    the package block is already present; missing file only warns."""
+    print("=== Applying product privapp permissions (App Manager, CN only) ===")
+    if region != "CN":
+        print("  skipped (global firmware)\n")
+        return
+    xml = build_root / PRODUCT_PRIVAPP_PERMISSIONS
+    if not xml.is_file():
+        print(f"  [missing, skip] {PRODUCT_PRIVAPP_PERMISSIONS}\n")
+        return
+    text = xml.read_text()
+    if re.search(r'<privapp-permissions\s+package="com\.microsoft\.appmanager"',
+                 text):
+        print("  already present, skip\n")
+        return
+    idx = text.rfind("</permissions>")
+    if idx < 0:
+        print(f"  [warn] </permissions> not found in "
+              f"{PRODUCT_PRIVAPP_PERMISSIONS}, skip\n")
+        return
+    # Keep the closing tag's own indentation on its line.
+    m = re.search(r"([ \t]*)$", text[:idx])
+    indent = m.group(1) if m else ""
+    prefix = text[:idx - len(indent)]
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    text = prefix + PRODUCT_PRIVAPP_APP_MANAGER + "\n" + indent + text[idx:]
+    xml.write_text(text)
+    print(f"  appended com.microsoft.appmanager to "
+          f"{PRODUCT_PRIVAPP_PERMISSIONS}\n")
 
 
 def _apply_prop_entries(prop_path: Path, entries: List[str]) -> None:
@@ -7541,6 +7593,11 @@ def main() -> None:
     # Step 4c3c: init.rc tweak (animationfix block at the end of
     # system/system/etc/init/hw/init.rc). Both modes, before debloat+rebuild.
     apply_init_rc_tweak(patch_root)
+
+    # Step 4c3d: CN-only product privapp permissions (Microsoft App Manager).
+    # Appended before </permissions> in product/etc/permissions/
+    # privapp-permissions-product.xml; idempotent, missing file only warns.
+    apply_privapp_permissions_product(patch_root, region)
 
     # Step 4c4: build.prop tweaks (density, custom blocks, locale/host) on
     # the build tree. Both modes. Order vs debloat is irrelevant (nothing
