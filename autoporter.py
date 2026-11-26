@@ -350,10 +350,10 @@ MI_EXT_DROP_PROP_KEYS = [
 ]
 # Set to 3 when the key exists ("if possible" — never added when absent).
 MI_EXT_RADIO_5G_KEY = "ro.vendor.radio.5g"
-# "TengeOS | " is prepended to its value (e.g. OS4.0.0.12.XPTCNXM ->
-# "TengeOS | OS4.0.0.12.XPTCNXM"); already-prefixed values are left alone.
+# "FluidOS | " is prepended to its value (e.g. OS4.0.0.12.XPTCNXM ->
+# "FluidOS | OS4.0.0.12.XPTCNXM"); already-prefixed values are left alone.
 MI_EXT_VERSION_INCR_KEY = "ro.mi.os.version.incremental"
-MI_EXT_VERSION_PREFIX = "TengeOS | "
+MI_EXT_VERSION_PREFIX = "FluidOS | "
 # Moved out of mi_ext/etc/build.prop into product/etc/build.prop.
 MI_EXT_UNINSTALL_FLAG = "ro.miui.support.system.app.uninstall.v2"
 # (mi_ext/product/... source, product/... dest, hyper-version gate or None).
@@ -2269,7 +2269,7 @@ MI_EXT_COPY_EXCLUDE = [
     "ro.product.build.version.incremental",
     "ro.build.version.incremental",
 ]
-# No keys currently get the TengeOS prefix on transfer: the two incremental
+# No keys currently get the FluidOS prefix on transfer: the two incremental
 # keys are excluded above (kept in mi_ext) instead of moved.
 MI_EXT_PREFIX_COPY_KEYS = []
 
@@ -2277,7 +2277,7 @@ MI_EXT_PREFIX_COPY_KEYS = []
 def apply_mi_ext_prop_transfer(build_root: Path) -> None:
     """Move every mi_ext/etc/build.prop key except MI_EXT_COPY_EXCLUDE into
     product/etc/build.prop (upsert, idempotent). Keys in
-    MI_EXT_PREFIX_COPY_KEYS get the TengeOS prefix on the way out
+    MI_EXT_PREFIX_COPY_KEYS get the FluidOS prefix on the way out
     (currently empty). Missing files only warn."""
     print("=== Moving mi_ext props into product ===")
     src_prop = build_root / MI_EXT_BUILD_PROP
